@@ -33,7 +33,8 @@ export function ARButton({ productSlug, productName, productUrl, variants, defau
   const [platform, setPlatform] = useState<ArPlatform | null>(null)
   const [open, setOpen] = useState(false)
   const [ceiling, setCeiling] = useState<CeilingPresetId>(defaultCeiling)
-  const [unsupported, setUnsupported] = useState(false)
+  const [unsupported, setUnsupported] = useState<null | "unsupported" | "sceneViewerFailed">(null)
+  const [insecure, setInsecure] = useState(false)
   const [ready, setReady] = useState(false)
   const mv = useRef<ModelViewerElement | null>(null)
   const holder = useRef<HTMLDivElement>(null)
@@ -44,7 +45,10 @@ export function ARButton({ productSlug, productName, productUrl, variants, defau
     const fellBack = window.location.hash === NO_AR_FALLBACK_HASH
     queueMicrotask(() => {
       setPlatform(p)
-      if (fellBack) setUnsupported(true)
+      if (fellBack) setUnsupported("sceneViewerFailed")
+      // Scene Viewer (a separate Android app) refuses to download models over plain http,
+      // e.g. when testing the dev server on http://192.168.x.x from a phone.
+      if (p === "scene-viewer" && !window.isSecureContext) setInsecure(true)
       // Arrived by scanning the desktop QR code → open the ceiling picker straight away.
       if (p !== "none" && new URLSearchParams(window.location.search).get("ar") === "1") setOpen(true)
     })
@@ -69,7 +73,7 @@ export function ARButton({ productSlug, productName, productUrl, variants, defau
     el.setAttribute("aria-hidden", "true")
     el.style.cssText = "position:absolute;width:1px;height:1px;opacity:0;pointer-events:none"
     el.addEventListener("ar-status", (e) => {
-      if ((e as CustomEvent<{ status: string }>).detail.status === "failed") setUnsupported(true)
+      if ((e as CustomEvent<{ status: string }>).detail.status === "failed") setUnsupported("unsupported")
     })
     holder.current.appendChild(el)
     mv.current = el
@@ -82,10 +86,14 @@ export function ARButton({ productSlug, productName, productUrl, variants, defau
     void ensureElement().then(() => {
       const el = mv.current
       if (cancelled || !el || !variant) return
-      // Scene Viewer reads title/link from the model URL's query string.
+      // Scene Viewer reads title/link from the model URL's query string. The link is the page the
+      // visitor is on (same host), falling back to the canonical product URL.
       const glb = new URL(variant.glb, window.location.href)
+      const here = new URL(window.location.href)
+      here.search = ""
+      here.hash = ""
       glb.searchParams.set("title", productName)
-      glb.searchParams.set("link", productUrl)
+      glb.searchParams.set("link", here.protocol === "https:" ? here.toString() : productUrl)
       el.setAttribute("src", glb.toString())
       el.setAttribute("ios-src", variant.usdz)
       // Give model-viewer one update cycle to pick the AR mode for the new source.
@@ -101,7 +109,7 @@ export function ARButton({ productSlug, productName, productUrl, variants, defau
     const el = mv.current
     if (!el) return
     if (!el.canActivateAR) {
-      setUnsupported(true)
+      setUnsupported("unsupported")
       return
     }
     track("ar_open", { productSlug, ceiling, platform })
@@ -122,9 +130,9 @@ export function ARButton({ productSlug, productName, productUrl, variants, defau
         <Box aria-hidden className="size-5" />
         {t.ar.button}
       </button>
-      {unsupported && (
+      {unsupported && !open && (
         <p role="status" className="mt-3 text-sm text-muted-foreground">
-          {t.ar.unsupported}
+          {t.ar[unsupported]}
         </p>
       )}
 
@@ -161,6 +169,12 @@ export function ARButton({ productSlug, productName, productUrl, variants, defau
               <li>• {t.ar.hintLight}</li>
             </ul>
 
+            {insecure && (
+              <p role="alert" className="mt-5 rounded-xl border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive">
+                {t.ar.needsHttps}
+              </p>
+            )}
+
             <button
               type="button"
               onClick={launch}
@@ -172,7 +186,7 @@ export function ARButton({ productSlug, productName, productUrl, variants, defau
             </button>
             {unsupported && (
               <p role="status" className="mt-3 text-sm text-destructive">
-                {t.ar.unsupported}
+                {t.ar[unsupported]}
               </p>
             )}
           </div>

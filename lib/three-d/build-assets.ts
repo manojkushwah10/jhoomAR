@@ -37,6 +37,20 @@ async function finish(name: string, doc: Document): Promise<BuiltFile> {
 }
 
 /**
+ * AR viewers (Scene Viewer, Quick Look) don't use transmission/IOR/emissive-strength. Removing
+ * them keeps the AR files to the smallest, most widely supported glTF feature set
+ * (only KHR_draco_mesh_compression remains). Crystals fall back to their semi-transparent colour.
+ */
+const BROWSER_ONLY_EXTENSIONS = ["KHR_materials_transmission", "KHR_materials_ior", "KHR_materials_volume", "KHR_materials_emissive_strength"]
+
+function stripBrowserOnlyExtensions(doc: Document): Document {
+  for (const ext of doc.getRoot().listExtensionsUsed()) {
+    if (BROWSER_ONLY_EXTENSIONS.includes(ext.extensionName)) ext.dispose()
+  }
+  return doc
+}
+
+/**
  * From one source model (metres, uncompressed) build:
  *   - web.glb            for the 3D viewer
  *   - ar-<ceiling>.glb   hanging AR variants, one per ceiling preset
@@ -45,7 +59,7 @@ export async function buildCeilingLightAssets(source: Document, expected: Expect
   const scale = checkScale(source, expected)
   const sizeM = boundsSize(sceneBounds(source))
 
-  const arDocs = CEILING_PRESETS.map((p) => [p.id, createHangingVariant(source, p.metres)] as const)
+  const arDocs = CEILING_PRESETS.map((p) => [p.id, stripBrowserOnlyExtensions(createHangingVariant(source, p.metres))] as const)
   const web = await finish("web.glb", source)
   const ar = {} as Record<CeilingPresetId, BuiltFile>
   for (const [id, doc] of arDocs) ar[id] = await finish(arFileName(id), doc)

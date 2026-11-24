@@ -3,7 +3,7 @@
 Automated tests cover everything up to the moment the phone hands off to its AR app. **Camera/AR itself can only be checked on a real phone** — please run this list and fill in the results table.
 
 **URL to test:** `https://<your-vercel-url>/products/demo-jhoomar`
-(Phones can't open `localhost`, so use the Vercel link or a preview link.)
+(Phones can't open `localhost`, so use the Vercel link or a preview link. The dev server's WiFi address — `http://192.168.x.x:3000` — shows the page and the 3D view, but **Android's AR viewer refuses plain `http://` links**, so "Open camera" can't work there. Always test AR on an `https://` link.)
 
 **Before you start**
 - Android: Chrome up to date; *Google Play Services for AR* installed (Play Store → search "Google Play Services for AR"). Most phones from 2019 onwards support it.

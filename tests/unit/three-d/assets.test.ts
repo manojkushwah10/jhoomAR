@@ -23,6 +23,8 @@ describe("asset pipeline (placeholder → web + hanging AR GLBs)", () => {
     // Draco-compressed AR file still has the canopy at 3.05 m (quantisation tolerance ~1 mm).
     const doc = await io.readBinary(assets.ar["305"].bytes)
     expect(doc.getRoot().listExtensionsUsed().map((e) => e.extensionName)).toContain("KHR_draco_mesh_compression")
+    // AR files use only Draco — nothing Scene Viewer / Quick Look might not understand.
+    expect(doc.getRoot().listExtensionsUsed().map((e) => e.extensionName)).toEqual(["KHR_draco_mesh_compression"])
     const b = sceneBounds(doc)
     expect(b.max[1]).toBeCloseTo(3.05, 2)
     expect(b.min[1]).toBeCloseTo(0, 2)

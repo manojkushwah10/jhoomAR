@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-11-24T19:25:45.860Z",
+  "generatedAt": "2026-11-24T19:51:42.068Z",
   "spec": {
     "diameterCm": 80,
     "bodyHeightCm": 90,
@@ -19,25 +19,25 @@
       "glTFWarnings": 0
     },
     "ar-275.glb": {
-      "sizeBytes": 76676,
+      "sizeBytes": 76416,
       "triangles": 26572,
       "glTFErrors": 0,
       "glTFWarnings": 0
     },
     "ar-305.glb": {
-      "sizeBytes": 76676,
+      "sizeBytes": 76416,
       "triangles": 26572,
       "glTFErrors": 0,
       "glTFWarnings": 0
     },
     "ar-335.glb": {
-      "sizeBytes": 76676,
+      "sizeBytes": 76416,
       "triangles": 26572,
       "glTFErrors": 0,
       "glTFWarnings": 0
     },
     "ar-365.glb": {
-      "sizeBytes": 76676,
+      "sizeBytes": 76416,
       "triangles": 26572,
       "glTFErrors": 0,
       "glTFWarnings": 0

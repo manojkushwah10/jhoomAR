@@ -76,9 +76,81 @@ test.describe("Android phone", () => {
     await expect(arElement).toHaveAttribute("ar-modes", "scene-viewer quick-look")
   })
 
+  test("Open camera launches Scene Viewer with a valid intent", async ({ page }) => {
+    // Record the intent instead of letting the browser try to open the Google app.
+    await page.addInitScript(() => {
+      const w = window as unknown as { __arLinks: Array<{ href: string; rel: string }> }
+      w.__arLinks = []
+      HTMLAnchorElement.prototype.click = function () {
+        w.__arLinks.push({ href: this.href, rel: this.rel })
+      }
+    })
+    await page.goto(PATH)
+    await page.getByRole("button", { name: "View in your room" }).click()
+    const dialog = page.getByRole("dialog")
+    await dialog.getByText("11 ft").click()
+    await expect(dialog.getByRole("alert")).toHaveCount(0) // localhost is a secure context: no https warning
+    await dialog.getByRole("button", { name: "Open camera" }).click()
+
+    await expect.poll(() => page.evaluate(() => (window as unknown as { __arLinks: unknown[] }).__arLinks.length)).toBe(1)
+    const [{ href }] = await page.evaluate(() => (window as unknown as { __arLinks: Array<{ href: string }> }).__arLinks)
+    expect(href.startsWith("intent://arvr.google.com/scene-viewer/1.2?")).toBe(true)
+    const params = new URLSearchParams(href.slice(href.indexOf("?") + 1, href.indexOf("#Intent")))
+    expect(params.get("mode")).toBe("ar_preferred")
+    expect(params.get("resizable")).toBe("false")
+    expect(params.get("title")).toBe("Aarohi 8-Arm Crystal Jhoomar")
+    const file = new URL(params.get("file")!)
+    expect(file.pathname).toBe("/models/demo-jhoomar/ar-335.glb")
+    expect(href).toContain("package=com.google.android.googlequicksearchbox")
+    expect(href).toContain("S.browser_fallback_url=")
+
+    // The model Scene Viewer will download is really there, with the right type.
+    const res = await page.request.get(file.toString())
+    expect(res.status()).toBe(200)
+    expect(res.headers()["content-type"]).toBe("model/gltf-binary")
+  })
+
+  test("coming back from a failed Scene Viewer shows what to do", async ({ page }) => {
+    await page.goto(`${PATH}#model-viewer-no-ar-fallback`)
+    await expect(page.getByText("Google Play Services for AR")).toBeVisible()
+  })
+
   test("arriving from the desktop QR code (?ar=1) opens the ceiling picker", async ({ page }) => {
     await page.goto(`${PATH}?ar=1`)
     await expect(page.getByRole("dialog", { name: "How high is your ceiling?" })).toBeVisible()
+  })
+})
+
+test.describe("iPhone (Quick Look)", () => {
+  test.skip(({ browserName }) => browserName !== "webkit", "WebKit only")
+
+  test("Open camera opens the pre-built USDZ in AR Quick Look at fixed size", async ({ page }) => {
+    // Playwright's WebKit has no AR Quick Look, so pretend <a rel="ar"> is supported (as on a real iPhone).
+    await page.addInitScript(() => {
+      const supports = DOMTokenList.prototype.supports
+      DOMTokenList.prototype.supports = function (token: string) {
+        return token === "ar" ? true : supports.call(this, token)
+      }
+      const w = window as unknown as { __arLinks: Array<{ href: string; rel: string }> }
+      w.__arLinks = []
+      HTMLAnchorElement.prototype.click = function () {
+        w.__arLinks.push({ href: this.href, rel: this.rel })
+      }
+    })
+    await page.goto(PATH)
+    await page.getByRole("button", { name: "View in your room" }).click()
+    const dialog = page.getByRole("dialog")
+    await dialog.getByText("9 ft").click()
+    await dialog.getByRole("button", { name: "Open camera" }).click()
+
+    await expect.poll(() => page.evaluate(() => (window as unknown as { __arLinks: unknown[] }).__arLinks.length)).toBe(1)
+    const [link] = await page.evaluate(() => (window as unknown as { __arLinks: Array<{ href: string; rel: string }> }).__arLinks)
+    expect(link.rel).toBe("ar")
+    const url = new URL(link.href)
+    expect(url.pathname).toBe("/models/demo-jhoomar/ar-275.usdz")
+    expect(url.hash).toBe("#allowsContentScaling=0")
+    const res = await page.request.get(url.toString())
+    expect(res.headers()["content-type"]).toBe("model/vnd.usdz+zip")
   })
 })
 
