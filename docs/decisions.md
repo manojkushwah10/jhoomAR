@@ -1,0 +1,47 @@
+# Decisions log
+
+Newest first. Format: decision — why — alternatives.
+
+## 2026-11-25 — M0/M1
+
+**3D engine loads on the visitor's first interaction** (scroll, touch, mouse move, key, or the "View in 3D" pill), not on page load or idle. Loading it on idle cost ~3 s of main-thread time and dropped Lighthouse performance to 46; on interaction it's 93 (SEO/accessibility/best-practices 100, CLS 0, TBT ~10 ms; lab LCP 3.2 s on simulated slow 4G — to be tuned in M4/M5 against the 2.5 s target). The poster image is the LCP element and is always server-rendered.
+
+**Images served as WebP only** (no AVIF): AVIF encoding on first request was slow, and the sources are already WebP.
+
+**Next.js 16.4 with Cache Components (default in create-next-app).** Pages are prerendered into a static shell; runtime reads (cookies, headers, searchParams) must be inside `<Suspense>`. Middleware is called `proxy.ts` in v16. — Best SEO/performance defaults. — Turning `cacheComponents` off (more familiar, less static).
+
+**Better Auth instead of Auth.js credentials.** Admin-only email + password, public sign-up disabled, admins created with `npm run admin:create`. Login rate-limited (5/min) in Postgres. Tables are named `admin_user`, `admin_session`, `admin_account`. — Auth.js handed new development to the Better Auth team and is still v5 beta; its credentials provider has no built-in hashing or DB sessions. — Auth.js, Supabase Auth, iron-session.
+
+**Prisma 7.10 pinned.** npm `latest` points at an 8.0 RC. Prisma 7 needs `prisma.config.ts` and a driver adapter (`@prisma/adapter-pg`); the client is generated into `lib/generated/prisma` (git-ignored, `postinstall` regenerates it). `prisma.config.ts` loads `.env.local` and prefers `DIRECT_URL` for migrations (Neon).
+
+**Neon for cloud Postgres; local Homebrew Postgres for development and tests** (`jhoomar_dev`, `jhoomar_test`).
+
+**Rate limiting in Postgres** (`rate_limit` table) — no Redis/Upstash account. Revisit if traffic grows.
+
+**Storage behind one interface** (`lib/storage`): `local` driver (files in `.storage/`, served by `/api/storage/...` in development only) and `r2` driver (S3 API, presigned browser uploads).
+
+**3D: real scale, metres, origin at the canopy for hanging lights.** The placeholder is built in code (`lib/three-d/placeholder.ts`): 80 cm Ø × 90 cm body + 40 cm chain = 130 cm total.
+
+**Drop length = chain from the canopy to the top of the body.** Bottom of the light = ceiling − (drop + body height). With a 2.75 m ceiling the demo's bottom is at 1.45 m.
+
+**Hanging AR via pre-built variants + floor marker.** Scene Viewer and Quick Look only place on the floor (bounding-box bottom). Each AR GLB has the light lifted so its top = ceiling, plus a faint disc + ring at y = 0. Variants for 2.75 / 3.05 / 3.35 / 3.65 m (9/10/11/12 ft), chosen by the customer before AR opens. — A single 2.75 m file looks wrong in common 10 ft rooms. Runtime re-generation is unnecessary (files are ~75 KB).
+
+**Floor marker uses standard (emissive) materials, not `KHR_materials_unlit`.** three.js' USDZExporter — which model-viewer uses for iPhone — silently drops non-standard materials. An unlit marker would vanish on iPhone and the jhoomar would sit on the floor. There's a regression test for this.
+
+**iPhone USDZ files are pre-built** (`ar-*.usdz`, via headless Chromium + three.js USDZExporter, the same code model-viewer uses on the fly). — Avoids Safari losing the tap "user gesture" during on-the-fly export, and opens faster. Cost: ~2 MB per file (USDZ isn't compressed). Admin can still override with a custom USDZ (M3).
+
+**AR files: Draco + no WebP/Meshopt/instancing.** Scene Viewer doesn't reliably support `EXT_texture_webp`, `EXT_meshopt_compression` or `EXT_mesh_gpu_instancing`. Web GLB may use WebP once textures exist (M3).
+
+**Draco decoder self-hosted** in `public/vendor/draco/` (copied from three.js) instead of Google's CDN — fewer third-party requests, works offline in tests.
+
+**AR modes:** `scene-viewer quick-look` by default; `webxr` only with `NEXT_PUBLIC_AR_WEBXR_EXPERIMENTAL=true` (phase 2: ceiling detection).
+
+**Crystals:** `KHR_materials_transmission` + IOR for the browser viewer; base colour alpha 0.45 (blend) as the fallback that Scene Viewer and Quick Look actually show. **Bulbs:** emissive + `KHR_materials_emissive_strength`.
+
+**AR capability detection without loading model-viewer:** `<a rel="ar">` support → Quick Look; Android (non-Firefox, non in-app browser) → Scene Viewer. If Scene Viewer isn't installed, model-viewer returns with `#model-viewer-no-ar-fallback` and we show a friendly message.
+
+**M1 product data is a typed fixture** (`lib/demo-product.ts`) so the demo deploys without a database. Replaced by Prisma in M2.
+
+**Hosting:** Vercel Hobby is fine for the demo but its terms forbid commercial use — production needs Vercel Pro (~$20/month) or a Node host (Railway/Render). Decide in M5.
+
+**Known tooling advisories (accepted for now):** `npm audit` reports issues in `effect` (via the Prisma CLI's config loader) and `minimatch` (via the shadcn CLI). Both are developer tools, not code that runs for site visitors. Re-check when Prisma 8 is stable.
