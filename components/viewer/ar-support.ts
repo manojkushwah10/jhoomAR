@@ -10,9 +10,13 @@ export type ArPlatform = "quick-look" | "scene-viewer" | "none"
  */
 export function detectArPlatform(): ArPlatform {
   if (typeof document === "undefined") return "none"
+  const ua = navigator.userAgent
+  const isIOS = /iPad|iPhone|iPod/.test(ua) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1)
+  // Same rule as model-viewer: Chrome/Edge/Firefox/DuckDuckGo on iOS run in a WKWebView where
+  // relList.supports("ar") is false, but they can still open AR Quick Look. The Google app (GSA) can't.
+  if (isIOS && /CriOS|EdgiOS|FxiOS|DuckDuckGo/.test(ua) && !/GSA\//.test(ua)) return "quick-look"
   const anchor = document.createElement("a")
   if (anchor.relList?.supports?.("ar")) return "quick-look"
-  const ua = navigator.userAgent
   if (/android/i.test(ua) && !/firefox|fban|fbav|instagram/i.test(ua)) return "scene-viewer"
   return "none"
 }

@@ -73,7 +73,7 @@ test.describe("Android phone", () => {
     await expect(arElement).toHaveAttribute("src", /ar-305\.glb\?title=Aarohi.*&link=http/)
     await expect(arElement).toHaveAttribute("ios-src", /ar-305\.usdz$/)
     await expect(arElement).toHaveAttribute("ar-scale", "fixed")
-    await expect(arElement).toHaveAttribute("ar-modes", "scene-viewer quick-look")
+    await expect(arElement).toHaveAttribute("ar-modes", "scene-viewer webxr quick-look")
   })
 
   test("Open camera launches Scene Viewer with a valid intent", async ({ page }) => {
@@ -109,6 +109,33 @@ test.describe("Android phone", () => {
     expect(res.status()).toBe(200)
     expect(res.headers()["content-type"]).toBe("model/gltf-binary")
   })
+
+  for (const xr of [true, false]) {
+    test(`Scene Viewer fails on the phone (like the owner's recording) → ${xr ? "offers AR in Chrome" : "says what to install"}`, async ({ page }) => {
+      await page.addInitScript((xrSupported) => {
+        HTMLAnchorElement.prototype.click = function () {
+          // What Chrome does when it can't hand the intent to Google's AR app: go to the fallback URL.
+          if (this.href.startsWith("intent://")) location.hash = "#model-viewer-no-ar-fallback"
+        }
+        Object.defineProperty(navigator, "xr", {
+          configurable: true,
+          value: { isSessionSupported: async () => xrSupported, addEventListener() {}, removeEventListener() {} },
+        })
+      }, xr)
+      await page.goto(PATH)
+      await page.getByRole("button", { name: "View in your room" }).click()
+      const dialog = page.getByRole("dialog")
+      await dialog.getByRole("button", { name: "Open camera" }).click()
+      if (xr) {
+        await expect(dialog.getByText("Google's AR app didn't open on this phone")).toBeVisible()
+        await expect(dialog.getByRole("button", { name: "Open camera in browser" })).toBeVisible()
+      } else {
+        await expect(dialog.getByText("Google Play Services for AR")).toBeVisible()
+      }
+      // model-viewer puts the URL back after the failed attempt.
+      await expect.poll(() => page.evaluate(() => location.hash)).toBe("")
+    })
+  }
 
   test("coming back from a failed Scene Viewer shows what to do", async ({ page }) => {
     await page.goto(`${PATH}#model-viewer-no-ar-fallback`)

@@ -2,7 +2,14 @@
 
 Newest first. Format: decision — why — alternatives.
 
-## 2026-11-25 — M0/M1
+## 2026-11-25 — M1 phone test fixes
+
+**Android AR: Scene Viewer first, then WebXR inside Chrome.** On the owner's Android phone, Chrome couldn't hand the intent to Google's AR app (Scene Viewer): it jumped to the fallback URL and model-viewer went straight back, so "Open camera" looked dead. model-viewer then switches to the next mode but can't start WebXR without a new tap. We now (1) listen for the fallback live, (2) list `webxr` after `scene-viewer`, and (3) if `navigator.xr.isSessionSupported("immersive-ar")` is true, show "Open camera in browser". That opens AR in Chrome, which asks for camera permission. If WebXR isn't supported either, the visitor is told to install/update the Google app and "Google Play Services for AR". The AR element is preloaded (`loading="eager"`) once the sheet opens, so the WebXR session starts within the tap's user activation, and it's made fullscreen while a session is running.
+
+**Plain-http warning.** Scene Viewer won't download over `http://` (e.g. the dev server at `http://192.168.x.x`), so the sheet warns when the page isn't a secure context.
+
+**iOS third-party browsers** (Chrome/Edge/Firefox on iPhone) get the AR button too — same rule as model-viewer.
+
 
 **3D engine loads on the visitor's first interaction** (scroll, touch, mouse move, key, or the "View in 3D" pill), not on page load or idle. Loading it on idle cost ~3 s of main-thread time and dropped Lighthouse performance to 46; on interaction it's 93 (SEO/accessibility/best-practices 100, CLS 0, TBT ~10 ms; lab LCP 3.2 s on simulated slow 4G — to be tuned in M4/M5 against the 2.5 s target). The poster image is the LCP element and is always server-rendered.
 
