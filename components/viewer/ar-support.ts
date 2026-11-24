@@ -23,3 +23,13 @@ export function detectArPlatform(): ArPlatform {
 
 /** model-viewer adds this hash when Scene Viewer could not open on Android. */
 export const NO_AR_FALLBACK_HASH = "#model-viewer-no-ar-fallback"
+
+/** Can Chrome run AR itself via WebXR (needs ARCore / "Google Play Services for AR")? */
+export async function webXrArSupported(): Promise<boolean> {
+  const xr = (navigator as Navigator & { xr?: { isSessionSupported(mode: string): Promise<boolean> } }).xr
+  try {
+    return Boolean(xr && (await xr.isSessionSupported("immersive-ar")))
+  } catch {
+    return false
+  }
+}

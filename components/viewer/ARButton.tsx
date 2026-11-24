@@ -7,7 +7,7 @@ import { t } from "@/lib/i18n"
 import { siteConfig } from "@/lib/site-config"
 import { CEILING_PRESETS, DEFAULT_CEILING_ID, type CeilingPresetId } from "@/lib/three-d/presets"
 import type { ModelViewerElement } from "@/types/model-viewer"
-import { NO_AR_FALLBACK_HASH, detectArPlatform, type ArPlatform } from "./ar-support"
+import { NO_AR_FALLBACK_HASH, detectArPlatform, webXrArSupported, type ArPlatform } from "./ar-support"
 import { loadModelViewer } from "./load-model-viewer"
 
 export type ArVariant = { id: CeilingPresetId; glb: string; usdz: string }
@@ -22,137 +22,194 @@ type Props = {
   placement?: "floor" | "wall"
 }
 
+type Role = "handoff" | "webxr"
+const HIDDEN = "position:absolute;width:1px;height:1px;opacity:0;pointer-events:none"
+const FULLSCREEN = "position:fixed;inset:0;width:100%;height:100%;z-index:60"
+
 /**
  * "View in your room" for hanging lights.
  *  1. Tap the button → choose ceiling height (9/10/11/12 ft).
- *  2. Tap "Open camera" → Scene Viewer (Android) or AR Quick Look (iPhone) opens with the
- *     pre-built hanging variant for that height, at fixed real size.
- * On devices without AR this renders nothing; the page shows a QR code instead (desktop).
+ *  2. "Open camera" hands the pre-built hanging model to Google's Scene Viewer (Android) or
+ *     AR Quick Look (iPhone), at fixed real size.
+ *  3. Android only: if Scene Viewer doesn't show anything (app missing, opens and closes, or Chrome
+ *     falls back), offer AR inside Chrome itself (WebXR — asks for camera access) when the phone supports it,
+ *     otherwise say what to install.
+ * Add ?ardebug=1 to the URL to see a diagnostics panel (for phone testing).
  */
 export function ARButton({ productSlug, productName, productUrl, variants, defaultCeiling = DEFAULT_CEILING_ID, placement = "floor" }: Props) {
   const [platform, setPlatform] = useState<ArPlatform | null>(null)
+  const [xr, setXr] = useState<boolean | null>(null)
   const [open, setOpen] = useState(false)
   const [ceiling, setCeiling] = useState<CeilingPresetId>(defaultCeiling)
   const [unsupported, setUnsupported] = useState<null | "unsupported" | "sceneViewerFailed">(null)
-  /** Scene Viewer didn't open, but Chrome can do AR itself (WebXR) → one more tap needed. */
-  const [webXrNext, setWebXrNext] = useState(false)
+  /** An Android hand-off to Scene Viewer was tried and the visitor is back on the page. */
+  const [attempted, setAttempted] = useState(false)
   const [insecure, setInsecure] = useState(false)
   const [ready, setReady] = useState(false)
-  const mv = useRef<ModelViewerElement | null>(null)
+  const [debug, setDebug] = useState(false)
+  const [log, setLog] = useState<string[]>([])
+  const [caps, setCaps] = useState("-")
+  const els = useRef<Partial<Record<Role, ModelViewerElement>>>({})
   const holder = useRef<HTMLDivElement>(null)
+  const t0 = useRef(0)
+
+  const note = useCallback((msg: string) => {
+    const ms = t0.current ? `+${Date.now() - t0.current}ms ` : ""
+    setLog((l) => [...l.slice(-30), `${ms}${msg}`])
+  }, [])
 
   useEffect(() => {
-    // Client-only capability check (no SSR/hydration mismatch: first render is the same).
+    // Client-only capability checks (no SSR/hydration mismatch: first render is the same).
     const p = detectArPlatform()
+    const params = new URLSearchParams(window.location.search)
     const fellBack = window.location.hash === NO_AR_FALLBACK_HASH
     queueMicrotask(() => {
       setPlatform(p)
-      if (fellBack) setUnsupported("sceneViewerFailed")
+      setDebug(params.get("ardebug") === "1")
+      if (fellBack) setAttempted(true)
       // Scene Viewer (a separate Android app) refuses to download models over plain http,
       // e.g. when testing the dev server on http://192.168.x.x from a phone.
       if (p === "scene-viewer" && !window.isSecureContext) setInsecure(true)
       // Arrived by scanning the desktop QR code → open the ceiling picker straight away.
-      if (p !== "none" && new URLSearchParams(window.location.search).get("ar") === "1") setOpen(true)
+      if (p !== "none" && params.get("ar") === "1") setOpen(true)
     })
+    if (p === "scene-viewer") void webXrArSupported().then(setXr)
   }, [])
 
-  // Scene Viewer failure while the page is open: Chrome jumps to the fallback URL (#model-viewer-no-ar-fallback)
-  // and model-viewer immediately goes back. It then switches to the next AR mode (WebXR) but can't start it
-  // without a fresh tap, so we tell the visitor to tap once more — or what to install if AR isn't possible.
+  // After a failed Android attempt with no in-browser AR either: tell the visitor what to install.
+  useEffect(() => {
+    if (attempted && xr === false) queueMicrotask(() => setUnsupported("sceneViewerFailed"))
+  }, [attempted, xr])
+
+  // Chrome couldn't hand over to Google's app → it jumps to #model-viewer-no-ar-fallback (model-viewer goes back).
   useEffect(() => {
     if (platform !== "scene-viewer") return
     const onHash = () => {
       if (window.location.hash !== NO_AR_FALLBACK_HASH) return
-      track("ar_open", { productSlug, result: "scene_viewer_failed" })
-      void webXrSupported().then((ok) => {
-        if (ok) {
-          setWebXrNext(true)
-          setUnsupported(null)
-        } else {
-          setUnsupported("sceneViewerFailed")
-        }
-      })
+      note("Chrome used the fallback URL (Google AR app could not be opened)")
+      track("ar_open", { productSlug, result: "scene_viewer_fallback" })
+      setAttempted(true)
     }
     window.addEventListener("hashchange", onHash)
     return () => window.removeEventListener("hashchange", onHash)
-  }, [platform, productSlug])
+  }, [platform, productSlug, note])
 
   const variant = variants.find((v) => v.id === ceiling) ?? variants[0]
 
-  // Create one hidden <model-viewer> that only does the AR hand-off.
-  const ensureElement = useCallback(async () => {
+  /** One hidden <model-viewer> per AR route: "handoff" (Scene Viewer / Quick Look) and, if supported, "webxr". */
+  const ensureElements = useCallback(async () => {
     await loadModelViewer()
-    if (mv.current || !holder.current) return
-    const el = document.createElement("model-viewer") as ModelViewerElement
-    el.setAttribute("ar", "")
-    // Android: Google's Scene Viewer first; if it can't open, AR inside Chrome (WebXR, asks for camera access).
-    el.setAttribute(
-      "ar-modes",
-      siteConfig.arWebXrExperimental ? "webxr scene-viewer quick-look" : "scene-viewer webxr quick-look",
-    )
-    el.setAttribute("ar-scale", "fixed")
-    el.setAttribute("ar-placement", placement)
-    // Load the AR model as soon as the sheet opens, so a WebXR session can start straight from the tap.
-    el.setAttribute("loading", "eager")
-    el.setAttribute("alt", productName)
-    el.setAttribute("aria-hidden", "true")
-    const hidden = "position:absolute;width:1px;height:1px;opacity:0;pointer-events:none"
-    el.style.cssText = hidden
-    el.addEventListener("ar-status", (e) => {
-      const status = (e as CustomEvent<{ status: string }>).detail.status
-      // In-browser AR (WebXR) draws model-viewer's own controls on top of the camera: show the element.
-      if (status === "session-started") {
-        el.removeAttribute("aria-hidden")
-        el.style.cssText = "position:fixed;inset:0;width:100%;height:100%;z-index:60"
-      } else if (status === "not-presenting") {
-        el.setAttribute("aria-hidden", "true")
-        el.style.cssText = hidden
-      } else if (status === "failed") {
-        // Keep a more specific message (e.g. "install Google Play Services for AR") if we already have one.
-        setUnsupported((current) => current ?? "unsupported")
-      }
-    })
-    holder.current.appendChild(el)
-    mv.current = el
-  }, [placement, productName])
+    if (!holder.current) return
+    const roles: Role[] = ["handoff"]
+    if (platform === "scene-viewer" && (xr || siteConfig.arWebXrExperimental)) roles.push("webxr")
+    for (const role of roles) {
+      if (els.current[role]) continue
+      const el = document.createElement("model-viewer") as ModelViewerElement
+      el.dataset.arRole = role
+      el.setAttribute("ar", "")
+      el.setAttribute("ar-modes", role === "webxr" ? "webxr" : "scene-viewer quick-look")
+      el.setAttribute("ar-scale", "fixed")
+      el.setAttribute("ar-placement", placement)
+      // The WebXR element must already have the model loaded so the session starts within the tap.
+      el.setAttribute("loading", role === "webxr" ? "eager" : "lazy")
+      el.setAttribute("alt", productName)
+      el.setAttribute("aria-hidden", "true")
+      el.style.cssText = HIDDEN
+      el.addEventListener("ar-status", (e) => {
+        const status = (e as CustomEvent<{ status: string }>).detail.status
+        note(`${role}: ar-status ${status}`)
+        // In-browser AR draws model-viewer's own controls over the camera: show the element meanwhile.
+        if (status === "session-started") {
+          el.removeAttribute("aria-hidden")
+          el.style.cssText = FULLSCREEN
+        } else if (status === "not-presenting") {
+          el.setAttribute("aria-hidden", "true")
+          el.style.cssText = HIDDEN
+        } else if (status === "failed") {
+          if (role === "handoff" && platform === "scene-viewer") {
+            // Scene Viewer is now blocked for this page: offer in-Chrome AR, or say what to install.
+            setAttempted(true)
+          } else {
+            setUnsupported((current) => current ?? "unsupported")
+          }
+        }
+      })
+      el.addEventListener("load", () => note(`${role}: model loaded`))
+      el.addEventListener("error", (e) => note(`${role}: error ${JSON.stringify((e as unknown as CustomEvent).detail ?? "")}`))
+      holder.current.appendChild(el)
+      els.current[role] = el
+    }
+  }, [platform, xr, placement, productName, note])
 
-  // Keep the hidden element pointed at the chosen ceiling height (before the user taps "Open camera").
+  // Keep the hidden elements pointed at the chosen ceiling height (before the user taps).
   useEffect(() => {
     if (!open) return
     let cancelled = false
-    void ensureElement().then(() => {
-      const el = mv.current
-      if (cancelled || !el || !variant) return
-      // Scene Viewer reads title/link from the model URL's query string. The link is the page the
-      // visitor is on (same host), falling back to the canonical product URL.
+    void ensureElements().then(() => {
+      if (cancelled || !variant) return
+      // Scene Viewer reads title/link from the model URL's query string.
       const glb = new URL(variant.glb, window.location.href)
       const here = new URL(window.location.href)
       here.search = ""
       here.hash = ""
       glb.searchParams.set("title", productName)
       glb.searchParams.set("link", here.protocol === "https:" ? here.toString() : productUrl)
-      el.setAttribute("src", glb.toString())
-      el.setAttribute("ios-src", variant.usdz)
+      for (const el of Object.values(els.current)) {
+        el.setAttribute("src", glb.toString())
+        el.setAttribute("ios-src", variant.usdz)
+      }
       // Give model-viewer one update cycle to pick the AR mode for the new source.
-      requestAnimationFrame(() => requestAnimationFrame(() => !cancelled && setReady(true)))
+      requestAnimationFrame(() =>
+        requestAnimationFrame(() => {
+          if (cancelled) return
+          setReady(true)
+          const { handoff, webxr } = els.current
+          setCaps(`handoff=${String(handoff?.canActivateAR)} webxr=${String(webxr?.canActivateAR)}`)
+        }),
+      )
     })
     return () => {
       cancelled = true
       setReady(false)
     }
-  }, [open, variant, ensureElement, productName, productUrl])
+  }, [open, variant, ensureElements, productName, productUrl])
 
-  async function launch() {
-    const el = mv.current
+  /** Android: notice when the Scene Viewer hand-off didn't show anything, however it failed. */
+  function watchHandoff() {
+    let wentAway = false
+    const finish = (why: string) => {
+      document.removeEventListener("visibilitychange", onVisibility)
+      window.clearTimeout(timer)
+      note(why)
+      setAttempted(true)
+    }
+    const onVisibility = () => {
+      note(`page ${document.visibilityState}`)
+      if (document.hidden) wentAway = true
+      else if (wentAway) finish("back on the page")
+    }
+    const timer = window.setTimeout(() => {
+      if (!wentAway) finish("no app opened within 3 s")
+    }, 3000)
+    document.addEventListener("visibilitychange", onVisibility)
+  }
+
+  async function launch(role: Role) {
+    const el = els.current[role]
+    t0.current = Date.now()
+    note(`tap → ${role} (canActivateAR=${el?.canActivateAR})`)
     if (!el) return
     if (!el.canActivateAR) {
-      setUnsupported("unsupported")
+      setUnsupported(role === "handoff" && platform === "scene-viewer" ? "sceneViewerFailed" : "unsupported")
       return
     }
-    track("ar_open", { productSlug, ceiling, platform, mode: webXrNext ? "webxr" : platform })
+    setUnsupported(null)
+    track("ar_open", { productSlug, ceiling, platform, mode: role === "webxr" ? "webxr" : platform })
+    if (role === "handoff" && platform === "scene-viewer") watchHandoff()
     try {
       await el.activateAR()
-    } catch {
+    } catch (err) {
+      note(`activateAR threw: ${err instanceof Error ? err.message : String(err)}`)
       setUnsupported("unsupported")
     }
   }
@@ -160,6 +217,9 @@ export function ARButton({ productSlug, productName, productUrl, variants, defau
   if (platform === null || platform === "none") {
     return <div ref={holder} className="hidden" />
   }
+
+  const canWebXr = platform === "scene-viewer" && xr === true
+  const primaryRole: Role = attempted && canWebXr ? "webxr" : "handoff"
 
   return (
     <div ref={holder} className="relative">
@@ -179,7 +239,7 @@ export function ARButton({ productSlug, productName, productUrl, variants, defau
 
       {open && (
         <div role="dialog" aria-modal="true" aria-labelledby="ar-sheet-title" className="fixed inset-0 z-50 flex items-end bg-black/40 sm:items-center sm:justify-center">
-          <div className="w-full rounded-t-3xl bg-background p-6 pb-[max(1.5rem,env(safe-area-inset-bottom))] shadow-xl sm:max-w-md sm:rounded-3xl">
+          <div className="max-h-dvh w-full overflow-y-auto rounded-t-3xl bg-background p-6 pb-[max(1.5rem,env(safe-area-inset-bottom))] shadow-xl sm:max-w-md sm:rounded-3xl">
             <div className="flex items-start justify-between gap-4">
               <h2 id="ar-sheet-title" className="text-2xl">
                 {t.ar.sheetTitle}
@@ -210,7 +270,7 @@ export function ARButton({ productSlug, productName, productUrl, variants, defau
               <li>• {t.ar.hintLight}</li>
             </ul>
 
-            {webXrNext && !unsupported && (
+            {attempted && canWebXr && !unsupported && (
               <p role="status" className="mt-5 rounded-xl border border-brass/40 bg-brass-soft p-3 text-sm">
                 {t.ar.tapAgainWebXr}
               </p>
@@ -224,31 +284,40 @@ export function ARButton({ productSlug, productName, productUrl, variants, defau
 
             <button
               type="button"
-              onClick={launch}
+              onClick={() => launch(primaryRole)}
               disabled={!ready}
               className="mt-6 flex h-14 w-full items-center justify-center gap-2 rounded-full bg-ink text-base font-medium text-ivory disabled:opacity-60"
             >
               <Box aria-hidden className="size-5" />
-              {ready ? (webXrNext ? t.ar.openInBrowser : t.ar.open) : t.viewer.loading}
+              {ready ? (primaryRole === "webxr" ? t.ar.openInBrowser : t.ar.open) : t.viewer.loading}
             </button>
+            {canWebXr && primaryRole === "handoff" && (
+              <button type="button" onClick={() => launch("webxr")} disabled={!ready} className="mt-3 w-full text-center text-sm underline underline-offset-4 disabled:opacity-60">
+                {t.ar.orInBrowser}
+              </button>
+            )}
             {unsupported && (
               <p role="status" className="mt-3 text-sm text-destructive">
                 {t.ar[unsupported]}
               </p>
+            )}
+
+            {debug && (
+              <pre data-testid="ar-debug" className="mt-4 max-h-56 overflow-auto rounded-lg bg-muted p-3 text-[11px] leading-snug whitespace-pre-wrap">
+                {[
+                  `platform: ${platform} · secure: ${String(typeof window !== "undefined" && window.isSecureContext)}`,
+                  `webxr immersive-ar: ${String(xr)}`,
+                  `canActivateAR: ${caps}`,
+                  `attempted: ${attempted} · message: ${unsupported ?? "-"}`,
+                  `ua: ${typeof navigator !== "undefined" ? navigator.userAgent : ""}`,
+                  "— events —",
+                  ...log,
+                ].join("\n")}
+              </pre>
             )}
           </div>
         </div>
       )}
     </div>
   )
-}
-
-/** Can Chrome run AR itself (needs ARCore / "Google Play Services for AR")? */
-async function webXrSupported(): Promise<boolean> {
-  const xr = (navigator as Navigator & { xr?: { isSessionSupported(mode: string): Promise<boolean> } }).xr
-  try {
-    return Boolean(xr && (await xr.isSessionSupported("immersive-ar")))
-  } catch {
-    return false
-  }
 }

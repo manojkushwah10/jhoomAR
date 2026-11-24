@@ -18,8 +18,9 @@ export const en = {
     sceneViewerFailed:
       "Google's AR viewer couldn't open. Please update the Google app and install “Google Play Services for AR” from the Play Store, then try again. You can still rotate the jhoomar in 3D above.",
     tapAgainWebXr:
-      "Google's AR app didn't open on this phone. Tap “Open camera in browser” to see it right here in Chrome — tap Allow when it asks for the camera.",
+      "Didn't see the jhoomar? Tap “Open camera in browser” to view it right here in Chrome — tap Allow if it asks for the camera.",
     openInBrowser: "Open camera in browser",
+    orInBrowser: "Or open the camera right here in Chrome",
     needsHttps:
       "Android's AR viewer only opens secure (https://) links. Open the website's https link on your phone to use “View in your room”.",
     cancel: "Close",

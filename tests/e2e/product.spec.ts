@@ -69,11 +69,11 @@ test.describe("Android phone", () => {
     await dialog.getByText("10 ft").click()
     await expect(dialog.getByRole("button", { name: "Open camera" })).toBeEnabled({ timeout: 15_000 })
 
-    const arElement = page.locator("model-viewer[ar]")
+    const arElement = page.locator('model-viewer[data-ar-role="handoff"]')
     await expect(arElement).toHaveAttribute("src", /ar-305\.glb\?title=Aarohi.*&link=http/)
     await expect(arElement).toHaveAttribute("ios-src", /ar-305\.usdz$/)
     await expect(arElement).toHaveAttribute("ar-scale", "fixed")
-    await expect(arElement).toHaveAttribute("ar-modes", "scene-viewer webxr quick-look")
+    await expect(arElement).toHaveAttribute("ar-modes", "scene-viewer quick-look")
   })
 
   test("Open camera launches Scene Viewer with a valid intent", async ({ page }) => {
@@ -110,31 +110,58 @@ test.describe("Android phone", () => {
     expect(res.headers()["content-type"]).toBe("model/gltf-binary")
   })
 
-  for (const xr of [true, false]) {
-    test(`Scene Viewer fails on the phone (like the owner's recording) → ${xr ? "offers AR in Chrome" : "says what to install"}`, async ({ page }) => {
-      await page.addInitScript((xrSupported) => {
-        HTMLAnchorElement.prototype.click = function () {
-          // What Chrome does when it can't hand the intent to Google's AR app: go to the fallback URL.
-          if (this.href.startsWith("intent://")) location.hash = "#model-viewer-no-ar-fallback"
-        }
-        Object.defineProperty(navigator, "xr", {
-          configurable: true,
-          value: { isSessionSupported: async () => xrSupported, addEventListener() {}, removeEventListener() {} },
-        })
-      }, xr)
-      await page.goto(PATH)
-      await page.getByRole("button", { name: "View in your room" }).click()
-      const dialog = page.getByRole("dialog")
-      await dialog.getByRole("button", { name: "Open camera" }).click()
-      if (xr) {
-        await expect(dialog.getByText("Google's AR app didn't open on this phone")).toBeVisible()
-        await expect(dialog.getByRole("button", { name: "Open camera in browser" })).toBeVisible()
-      } else {
-        await expect(dialog.getByText("Google Play Services for AR")).toBeVisible()
+  /**
+   * The three ways the Scene Viewer hand-off can show nothing on a real phone:
+   *  - fallback: Chrome can't reach Google's app and jumps to #model-viewer-no-ar-fallback
+   *  - bounce:   Google's app opens and closes at once (page hidden → visible)
+   *  - nothing:  no app opens at all
+   */
+  const failures = {
+    fallback: () => {
+      location.hash = "#model-viewer-no-ar-fallback"
+    },
+    bounce: () => {
+      const set = (hidden: boolean) => {
+        Object.defineProperty(document, "hidden", { configurable: true, get: () => hidden })
+        Object.defineProperty(document, "visibilityState", { configurable: true, get: () => (hidden ? "hidden" : "visible") })
+        document.dispatchEvent(new Event("visibilitychange"))
       }
-      // model-viewer puts the URL back after the failed attempt.
-      await expect.poll(() => page.evaluate(() => location.hash)).toBe("")
-    })
+      setTimeout(() => set(true), 100)
+      setTimeout(() => set(false), 400)
+    },
+    nothing: () => {},
+  } as const
+
+  for (const [kind, fail] of Object.entries(failures)) {
+    for (const xr of [true, false]) {
+      test(`Scene Viewer ${kind} → ${xr ? "offers AR inside Chrome" : "says what to install"}`, async ({ page }) => {
+        await page.addInitScript(
+          ({ xrSupported, failSrc }) => {
+            const fail = new Function(`return (${failSrc})`)() as () => void
+            HTMLAnchorElement.prototype.click = function () {
+              if (this.href.startsWith("intent://")) fail()
+            }
+            Object.defineProperty(navigator, "xr", {
+              configurable: true,
+              value: { isSessionSupported: async () => xrSupported, addEventListener() {}, removeEventListener() {} },
+            })
+          },
+          { xrSupported: xr, failSrc: fail.toString() },
+        )
+        await page.goto(`${PATH}?ardebug=1`)
+        await page.getByRole("button", { name: "View in your room" }).click()
+        const dialog = page.getByRole("dialog")
+        if (xr) await expect(dialog.getByRole("button", { name: "Or open the camera right here in Chrome" })).toBeVisible()
+        await dialog.getByRole("button", { name: "Open camera", exact: true }).click()
+        if (xr) {
+          await expect(dialog.getByText("Didn't see the jhoomar?")).toBeVisible({ timeout: 6000 })
+          await expect(dialog.getByRole("button", { name: "Open camera in browser" })).toBeVisible()
+        } else {
+          await expect(dialog.getByText("Google Play Services for AR")).toBeVisible({ timeout: 6000 })
+        }
+        await expect(page.getByTestId("ar-debug")).toContainText("tap → handoff")
+      })
+    }
   }
 
   test("coming back from a failed Scene Viewer shows what to do", async ({ page }) => {
