@@ -2,6 +2,14 @@
 
 Newest first. Format: decision — why — alternatives.
 
+## 2026-11-25 — Full controls (owner request)
+
+**AR zoom allowed (amends "real size only").** `ar-scale="auto"` in every AR viewer: it opens at real size, pinch zooms, and Scene Viewer, Quick Look and WebXR all snap back to 100 % near real size. Zooming scales from the floor marker, so the canopy leaves the ceiling while zoomed — "100%" puts it back.
+
+**In-Chrome AR camera layout** (`components/viewer/ar-overlay.ts`, part of model-viewer's WebXR DOM overlay): product title + ceiling chip, "point at the floor" prompt until placed, live size readout, − / 100% / + buttons and a gesture hint. The buttons set model-viewer's internal `arRenderer.goalScale` (the value pinch changes), reached through its `renderer`/`scene` Symbols. That is private API, pinned to model-viewer 4.4 and covered by an E2E test; re-check on upgrade. Scene Viewer and Quick Look keep their own built-in UI.
+
+**3D viewer:** zoom buttons (`zoom()`), pan (two-finger / right-drag), reset, full screen (Fullscreen API with a CSS overlay fallback for iPhone; `touch-action: none` while full screen), deeper zoom limits (0.25 m radius, 8° FOV). The poster fades out once the model loads, so it doesn't ghost through while rotating.
+
 ## 2026-11-25 — M1 phone test fixes
 
 **Android AR, second round (owner's phone still showed nothing).** The hand-off can fail three ways: Chrome falls back (#model-viewer-no-ar-fallback), Google's app opens and closes at once (page hidden → visible; the recording showed the Google app's location icon), or nothing opens. All three now count as a failed attempt. If `navigator.xr.isSessionSupported("immersive-ar")` is true, "Open camera in browser" (WebXR) becomes the main button; it's also offered from the start as "Or open the camera right here in Chrome". WebXR runs on its own pre-loaded `<model-viewer data-ar-role="webxr">`, separate from the Scene Viewer/Quick Look one. `?ardebug=1` shows a diagnostics panel (capabilities + event timeline) for phone testing.

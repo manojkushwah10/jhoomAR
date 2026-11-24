@@ -55,6 +55,51 @@ test.describe("desktop", () => {
   })
 })
 
+test.describe("3D viewer controls", () => {
+  test.skip(({ browserName }) => browserName !== "chromium", "WebGL check in Chromium")
+
+  test("zoom in/out, reset and full screen work", async ({ page }) => {
+    await page.goto(PATH)
+    await page.getByRole("button", { name: "View in 3D" }).click()
+    const mv = page.locator("model-viewer:not([ar])").first()
+    await expect.poll(() => mv.evaluate((el) => (el as unknown as { loaded: boolean }).loaded), { timeout: 30_000 }).toBe(true)
+
+    // The poster underneath fades out once the model is visible (no ghost image while rotating).
+    await expect(page.getByRole("img", { name: /front view/ }).first()).toHaveClass(/opacity-0/)
+
+    type Cam = { getCameraOrbit(): { radius: number }; getFieldOfView(): number }
+    // "How big the jhoomar looks" = radius × tan(fov/2); smaller = more zoomed in.
+    const view = () =>
+      mv.evaluate((el) => {
+        const c = el as unknown as Cam
+        return c.getCameraOrbit().radius * Math.tan((c.getFieldOfView() * Math.PI) / 360)
+      })
+    const start = await view()
+
+    const toolbar = page.getByRole("toolbar", { name: "3D view controls" })
+    await toolbar.getByRole("button", { name: "Zoom in" }).click()
+    await toolbar.getByRole("button", { name: "Zoom in" }).click()
+    await expect.poll(view).toBeLessThan(start * 0.9)
+    const zoomed = await view()
+    await toolbar.getByRole("button", { name: "Zoom out" }).click()
+    await expect.poll(view).toBeGreaterThan(zoomed * 1.05)
+    await toolbar.getByRole("button", { name: "Reset view" }).click()
+    await expect.poll(async () => Math.abs((await view()) / start - 1)).toBeLessThan(0.05)
+
+    await toolbar.getByRole("button", { name: "Full screen" }).click()
+    const frame = page.locator("[data-expanded]")
+    await expect(frame).toBeVisible()
+    const box = await frame.boundingBox()
+    const vp = page.viewportSize()!
+    expect(box!.width).toBeGreaterThanOrEqual(vp.width - 1)
+    expect(box!.height).toBeGreaterThanOrEqual(vp.height - 1)
+    await expect(mv).toHaveAttribute("touch-action", "none")
+    await page.getByRole("button", { name: "Close full screen" }).click()
+    await expect(frame).toHaveCount(0)
+    await expect(mv).toHaveAttribute("touch-action", "pan-y")
+  })
+})
+
 test.describe("Android phone", () => {
   test.skip(({ browserName, isMobile }) => !isMobile || browserName !== "chromium", "Android only")
 
@@ -72,7 +117,7 @@ test.describe("Android phone", () => {
     const arElement = page.locator('model-viewer[data-ar-role="handoff"]')
     await expect(arElement).toHaveAttribute("src", /ar-305\.glb\?title=Aarohi.*&link=http/)
     await expect(arElement).toHaveAttribute("ios-src", /ar-305\.usdz$/)
-    await expect(arElement).toHaveAttribute("ar-scale", "fixed")
+    await expect(arElement).toHaveAttribute("ar-scale", "auto")
     await expect(arElement).toHaveAttribute("ar-modes", "scene-viewer quick-look")
   })
 
@@ -97,7 +142,7 @@ test.describe("Android phone", () => {
     expect(href.startsWith("intent://arvr.google.com/scene-viewer/1.2?")).toBe(true)
     const params = new URLSearchParams(href.slice(href.indexOf("?") + 1, href.indexOf("#Intent")))
     expect(params.get("mode")).toBe("ar_preferred")
-    expect(params.get("resizable")).toBe("false")
+    expect(params.get("resizable")).toBeNull() // pinch-to-zoom allowed (snaps back to real size)
     expect(params.get("title")).toBe("Aarohi 8-Arm Crystal Jhoomar")
     const file = new URL(params.get("file")!)
     expect(file.pathname).toBe("/models/demo-jhoomar/ar-335.glb")
@@ -164,6 +209,58 @@ test.describe("Android phone", () => {
     }
   }
 
+  test("in-Chrome AR camera layout: floor prompt, then size readout with − / Real size / + zoom", async ({ page }) => {
+    await page.addInitScript(() => {
+      Object.defineProperty(navigator, "xr", {
+        configurable: true,
+        value: { isSessionSupported: async () => true, addEventListener() {}, removeEventListener() {} },
+      })
+    })
+    await page.goto(PATH)
+    await page.getByRole("button", { name: "View in your room" }).click()
+    await page.getByRole("dialog").getByText("10 ft").click()
+    const xrEl = page.locator('model-viewer[data-ar-role="webxr"]')
+    await expect(xrEl).toBeAttached({ timeout: 15_000 })
+
+    // Pretend the WebXR session started, like model-viewer does on a phone.
+    const status = (s: string) => xrEl.evaluate((el, s) => el.dispatchEvent(new CustomEvent("ar-status", { detail: { status: s } })), s)
+    await status("session-started")
+    const overlay = xrEl.locator("[data-ar-overlay]")
+    await expect(overlay).toBeVisible()
+    await expect(overlay).toContainText("Aarohi 8-Arm Crystal Jhoomar")
+    await expect(overlay).toContainText("10 ft ceiling")
+    await expect(overlay).toContainText("Point your camera at the floor")
+    await expect(overlay.getByRole("button", { name: "Bigger" })).toBeHidden()
+
+    await status("object-placed")
+    await expect(overlay.getByRole("button", { name: "Bigger" })).toBeVisible()
+    await expect(overlay).toContainText("Real size")
+
+    // The buttons drive model-viewer's own AR scale (the value pinch-to-zoom changes).
+    const goal = () =>
+      xrEl.evaluate((el) => {
+        let proto: object | null = el
+        while (proto) {
+          for (const sym of Object.getOwnPropertySymbols(proto)) {
+            if (sym.description === "renderer") return (el as unknown as Record<symbol, { arRenderer: { goalScale: number } }>)[sym].arRenderer.goalScale
+          }
+          proto = Object.getPrototypeOf(proto)
+        }
+        return null
+      })
+    await overlay.getByRole("button", { name: "Bigger" }).click()
+    expect(await goal()).toBeCloseTo(1.25, 5)
+    await overlay.getByRole("button", { name: "Bigger" }).click()
+    expect(await goal()).toBeCloseTo(1.5625, 5)
+    await overlay.getByRole("button", { name: "Smaller" }).click()
+    expect(await goal()).toBeCloseTo(1.25, 5)
+    await overlay.getByRole("button", { name: "Back to real size" }).click()
+    expect(await goal()).toBe(1)
+
+    await status("not-presenting")
+    await expect(overlay).toBeHidden()
+  })
+
   test("coming back from a failed Scene Viewer shows what to do", async ({ page }) => {
     await page.goto(`${PATH}#model-viewer-no-ar-fallback`)
     await expect(page.getByText("Google Play Services for AR")).toBeVisible()
@@ -178,7 +275,7 @@ test.describe("Android phone", () => {
 test.describe("iPhone (Quick Look)", () => {
   test.skip(({ browserName }) => browserName !== "webkit", "WebKit only")
 
-  test("Open camera opens the pre-built USDZ in AR Quick Look at fixed size", async ({ page }) => {
+  test("Open camera opens the pre-built USDZ in AR Quick Look", async ({ page }) => {
     // Playwright's WebKit has no AR Quick Look, so pretend <a rel="ar"> is supported (as on a real iPhone).
     await page.addInitScript(() => {
       const supports = DOMTokenList.prototype.supports
@@ -202,7 +299,7 @@ test.describe("iPhone (Quick Look)", () => {
     expect(link.rel).toBe("ar")
     const url = new URL(link.href)
     expect(url.pathname).toBe("/models/demo-jhoomar/ar-275.usdz")
-    expect(url.hash).toBe("#allowsContentScaling=0")
+    expect(url.hash).toBe("") // scaling allowed in Quick Look
     const res = await page.request.get(url.toString())
     expect(res.headers()["content-type"]).toBe("model/vnd.usdz+zip")
   })

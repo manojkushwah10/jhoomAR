@@ -22,6 +22,10 @@ type ModelViewerAttributes = DetailedHTMLProps<HTMLAttributes<HTMLElement>, HTML
   "ar-scale"?: string
   "ar-placement"?: string
   "ios-src"?: string
+  "camera-target"?: string
+  "min-field-of-view"?: string
+  "max-field-of-view"?: string
+  "interpolation-decay"?: string
 }
 
 declare module "react" {
@@ -38,5 +42,6 @@ export type ModelViewerElement = HTMLElement & {
   activateAR(): Promise<void>
   src: string | null
   iosSrc: string | null
+  zoom(steps: number): void
   toBlob(options?: { mimeType?: string; qualityArgument?: number; idealAspect?: boolean }): Promise<Blob>
 }

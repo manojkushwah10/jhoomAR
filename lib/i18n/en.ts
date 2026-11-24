@@ -1,7 +1,13 @@
 /** User-facing strings (simple English). Add hi.ts with the same keys for Hindi later. */
 export const en = {
   viewer: {
-    rotateHint: "Drag to rotate · pinch to zoom",
+    rotateHint: "Drag to rotate · pinch or scroll to zoom · two fingers to move",
+    rotateHintDesktop: "Drag to rotate · scroll to zoom · right-drag to move",
+    zoomIn: "Zoom in",
+    zoomOut: "Zoom out",
+    reset: "Reset view",
+    fullscreen: "Full screen",
+    exitFullscreen: "Close full screen",
     load3d: "View in 3D",
     loading: "Loading 3D…",
     error: "The 3D view couldn't load. Please check your internet and try again.",
@@ -12,7 +18,14 @@ export const en = {
     sheetHelp: "Pick the closest height. Most homes are 9 or 10 feet.",
     open: "Open camera",
     hintFloor: "Point your camera at the floor below where the jhoomar will hang, then step back and look up.",
-    hintSize: "It is shown at its real size and can't be stretched.",
+    hintSize: "It opens at real size. Drag it to move it, twist with two fingers to turn it, pinch to zoom — it snaps back to real size.",
+    arGestures: "Drag: move · Twist: turn · Pinch: zoom",
+    arFindFloor: "Point your camera at the floor below where the jhoomar will hang, and move your phone slowly.",
+    arRealSize: "Real size",
+    arCeiling: "ceiling",
+    arZoomIn: "Bigger",
+    arZoomOut: "Smaller",
+    arResetSize: "Back to real size",
     hintLight: "The preview doesn't light up your room.",
     unsupported: "This phone can't show it in your room. You can still rotate it in 3D above.",
     sceneViewerFailed:

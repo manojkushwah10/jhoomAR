@@ -8,6 +8,7 @@ import { siteConfig } from "@/lib/site-config"
 import { CEILING_PRESETS, DEFAULT_CEILING_ID, type CeilingPresetId } from "@/lib/three-d/presets"
 import type { ModelViewerElement } from "@/types/model-viewer"
 import { NO_AR_FALLBACK_HASH, detectArPlatform, webXrArSupported, type ArPlatform } from "./ar-support"
+import { attachArOverlay } from "./ar-overlay"
 import { loadModelViewer } from "./load-model-viewer"
 
 export type ArVariant = { id: CeilingPresetId; glb: string; usdz: string }
@@ -30,7 +31,8 @@ const FULLSCREEN = "position:fixed;inset:0;width:100%;height:100%;z-index:60"
  * "View in your room" for hanging lights.
  *  1. Tap the button → choose ceiling height (9/10/11/12 ft).
  *  2. "Open camera" hands the pre-built hanging model to Google's Scene Viewer (Android) or
- *     AR Quick Look (iPhone), at fixed real size.
+ *     AR Quick Look (iPhone). It opens at real size; drag moves it, twist turns it, pinch zooms
+ *     (all three viewers snap back to 100% near real size).
  *  3. Android only: if Scene Viewer doesn't show anything (app missing, opens and closes, or Chrome
  *     falls back), offer AR inside Chrome itself (WebXR — asks for camera access) when the phone supports it,
  *     otherwise say what to install.
@@ -52,6 +54,10 @@ export function ARButton({ productSlug, productName, productUrl, variants, defau
   const els = useRef<Partial<Record<Role, ModelViewerElement>>>({})
   const holder = useRef<HTMLDivElement>(null)
   const t0 = useRef(0)
+  const ceilingRef = useRef<CeilingPresetId>(defaultCeiling)
+  useEffect(() => {
+    ceilingRef.current = ceiling
+  }, [ceiling])
 
   const note = useCallback((msg: string) => {
     const ms = t0.current ? `+${Date.now() - t0.current}ms ` : ""
@@ -108,13 +114,25 @@ export function ARButton({ productSlug, productName, productUrl, variants, defau
       el.dataset.arRole = role
       el.setAttribute("ar", "")
       el.setAttribute("ar-modes", role === "webxr" ? "webxr" : "scene-viewer quick-look")
-      el.setAttribute("ar-scale", "fixed")
+      // Pinch-to-zoom allowed; every AR viewer opens at real size and snaps back to 100% near it.
+      el.setAttribute("ar-scale", "auto")
       el.setAttribute("ar-placement", placement)
       // The WebXR element must already have the model loaded so the session starts within the tap.
       el.setAttribute("loading", role === "webxr" ? "eager" : "lazy")
       el.setAttribute("alt", productName)
       el.setAttribute("aria-hidden", "true")
       el.style.cssText = HIDDEN
+      const noArButton = document.createElement("span")
+      noArButton.slot = "ar-button"
+      noArButton.style.display = "none"
+      if (role === "handoff") el.appendChild(noArButton)
+      if (role === "webxr") {
+        // Proper camera layout over in-Chrome AR: title, ceiling chip, floor prompt, size readout, − / Real size / +.
+        attachArOverlay(el, () => ({
+          title: productName,
+          ceilingLabel: CEILING_PRESETS.find((p) => p.id === ceilingRef.current)?.label ?? "",
+        }))
+      }
       el.addEventListener("ar-status", (e) => {
         const status = (e as CustomEvent<{ status: string }>).detail.status
         note(`${role}: ar-status ${status}`)
