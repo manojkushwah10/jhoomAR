@@ -229,12 +229,39 @@ test.describe("Android phone", () => {
     await expect(overlay).toBeVisible()
     await expect(overlay).toContainText("Aarohi 8-Arm Crystal Jhoomar")
     await expect(overlay).toContainText("10 ft ceiling")
-    await expect(overlay).toContainText("Point your camera at the floor")
-    await expect(overlay.getByRole("button", { name: "Bigger" })).toBeHidden()
+    const internalScene = () =>
+      xrEl.evaluate((el) => {
+        let proto: object | null = el
+        while (proto) {
+          for (const sym of Object.getOwnPropertySymbols(proto)) {
+            if (sym.description === "scene") {
+              const sc = (el as unknown as Record<symbol, { target: { visible: boolean }; shadowIntensity: number; setShadowIntensity(v: number): void }>)[sym]
+              sc.setShadowIntensity(0.8) // what model-viewer sets in AR
+              return { modelVisible: sc.target.visible, shadow: sc.shadowIntensity }
+            }
+          }
+          proto = Object.getPrototypeOf(proto)
+        }
+        return null
+      })
+    await expect(overlay).toContainText("Point at the floor (not a table)")
+    // Hidden until anchored to the floor (no "sticker following the phone"), soft shadow.
+    expect(await internalScene()).toEqual({ modelVisible: false, shadow: 0.18 })
+    await expect(overlay.getByRole("button", { name: "Bigger" })).toBeVisible()
 
     await status("object-placed")
-    await expect(overlay.getByRole("button", { name: "Bigger" })).toBeVisible()
+    await expect(overlay).toContainText("Placed! Now look up")
+    expect((await internalScene())!.modelVisible).toBe(true)
     await expect(overlay).toContainText("Real size")
+
+    // Owner's recording: tracking lost after placement must NOT bring back the floor prompt.
+    const tracking = (s: string) => xrEl.evaluate((el, s) => el.dispatchEvent(new CustomEvent("ar-tracking", { detail: { status: s } })), s)
+    await tracking("not-tracking")
+    await expect(overlay).toContainText("Move your phone slowly")
+    await expect(overlay).not.toContainText("Point at the floor")
+    await expect(overlay.getByRole("button", { name: "Bigger" })).toBeVisible()
+    await tracking("tracking")
+    await expect(overlay.getByText("Move your phone slowly")).toBeHidden()
 
     // The buttons drive model-viewer's own AR scale (the value pinch-to-zoom changes).
     const goal = () =>

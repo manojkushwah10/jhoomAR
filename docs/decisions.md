@@ -2,6 +2,10 @@
 
 Newest first. Format: decision — why — alternatives.
 
+## 2026-11-25 — AR "looks 2D" fix (owner's recording)
+
+The recording showed a real 3D model, but: the floor prompt never went away (a brief tracking loss re-showed it and hid the controls, and "object-placed" only fires once), the jhoomar floated with the phone before placement, model-viewer's AR shadow (0.8) drew a dark oval under it, and the title sat under the exit ✕. Now: placement is a one-way state (tracking loss only shows a temporary "move slowly" tip); the model is hidden until anchored (12 s safety timeout), via model-viewer's internal `scene.target.visible`; the AR shadow is clamped to 0.18 by wrapping `scene.setShadowIntensity`; the prompt is a small pill at the bottom; the title is top-left. Prompt text now says "floor (not a table)", because a table detected as the floor lifts the jhoomar about 75 cm. Both internals are pinned to model-viewer 4.4 and covered by the AR layout E2E test.
+
 ## 2026-11-25 — Full controls (owner request)
 
 **AR zoom allowed (amends "real size only").** `ar-scale="auto"` in every AR viewer: it opens at real size, pinch zooms, and Scene Viewer, Quick Look and WebXR all snap back to 100 % near real size. Zooming scales from the floor marker, so the canopy leaves the ceiling while zoomed — "100%" puts it back.
