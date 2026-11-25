@@ -179,7 +179,7 @@ test.describe("Android phone", () => {
 
   for (const [kind, fail] of Object.entries(failures)) {
     for (const xr of [true, false]) {
-      test(`Scene Viewer ${kind} → ${xr ? "offers AR inside Chrome" : "says what to install"}`, async ({ page }) => {
+      test(`Google viewer ${kind} → ${xr ? "points back to the Chrome camera" : "says what to install"}`, async ({ page }) => {
         await page.addInitScript(
           ({ xrSupported, failSrc }) => {
             const fail = new Function(`return (${failSrc})`)() as () => void
@@ -196,11 +196,14 @@ test.describe("Android phone", () => {
         await page.goto(`${PATH}?ardebug=1`)
         await page.getByRole("button", { name: "View in your room" }).click()
         const dialog = page.getByRole("dialog")
-        if (xr) await expect(dialog.getByRole("button", { name: "Or open the camera right here in Chrome" })).toBeVisible()
-        await dialog.getByRole("button", { name: "Open camera", exact: true }).click()
+        // With in-Chrome AR available, Google's viewer is the secondary link; otherwise it's the main button.
+        const google = xr
+          ? dialog.getByRole("button", { name: "Or open in Google's AR viewer" })
+          : dialog.getByRole("button", { name: "Open camera", exact: true })
+        await google.click()
         if (xr) {
-          await expect(dialog.getByText("Didn't see the jhoomar?")).toBeVisible({ timeout: 6000 })
-          await expect(dialog.getByRole("button", { name: "Open camera in browser" })).toBeVisible()
+          await expect(dialog.getByText("Google's AR viewer didn't open on this phone")).toBeVisible({ timeout: 6000 })
+          await expect(dialog.getByRole("button", { name: "Open camera", exact: true })).toBeVisible()
         } else {
           await expect(dialog.getByText("Google Play Services for AR")).toBeVisible({ timeout: 6000 })
         }
@@ -208,6 +211,35 @@ test.describe("Android phone", () => {
       })
     }
   }
+
+  test("phones with in-Chrome AR: Open camera starts it directly in one tap (no Google app)", async ({ page }) => {
+    await page.addInitScript(() => {
+      const w = window as unknown as { __intents: number }
+      w.__intents = 0
+      HTMLAnchorElement.prototype.click = function () {
+        if (this.href.startsWith("intent://")) w.__intents++
+      }
+      Object.defineProperty(navigator, "xr", {
+        configurable: true,
+        value: { isSessionSupported: async () => true, addEventListener() {}, removeEventListener() {} },
+      })
+    })
+    await page.goto(`${PATH}?ardebug=1`)
+    await page.getByRole("button", { name: "View in your room" }).click()
+    const dialog = page.getByRole("dialog")
+    const xrEl = page.locator('model-viewer[data-ar-role="webxr"]')
+    await expect(xrEl).toBeAttached({ timeout: 15_000 })
+    // Record the AR start instead of opening a real camera session.
+    await xrEl.evaluate((el) => {
+      ;(el as unknown as { activateAR: () => Promise<void> }).activateAR = async () => {
+        ;(window as unknown as { __webxr: boolean }).__webxr = true
+      }
+    })
+    await dialog.getByRole("button", { name: "Open camera", exact: true }).click()
+    await expect.poll(() => page.evaluate(() => (window as unknown as { __webxr?: boolean }).__webxr ?? false)).toBe(true)
+    expect(await page.evaluate(() => (window as unknown as { __intents: number }).__intents)).toBe(0)
+    await expect(page.getByTestId("ar-debug")).toContainText("tap → webxr")
+  })
 
   test("in-Chrome AR camera layout: floor prompt, then size readout with − / Real size / + zoom", async ({ page }) => {
     await page.addInitScript(() => {

@@ -22,8 +22,8 @@ Automated tests cover everything up to the moment the phone hands off to its AR 
 | A1 | Open the product page | Poster photo shows straight away; page doesn't jump while loading |
 | A2 | Wait 2–3 s, then drag on the photo | Jhoomar rotates in 3D; pinch zooms; the page still scrolls when you swipe up/down outside the jhoomar |
 | A3 | Tap **View in your room** | A sheet asks "How high is your ceiling?" with 9 / 10 / 11 / 12 ft |
-| A4 | Pick your ceiling height, tap **Open camera** | Google's AR viewer opens (may ask for camera permission the first time). Time from tap to camera: ____ s (target < 3 s on 4G) |
-| A4b | **If the page slides and comes back instead** (Google's AR app couldn't open) | A gold box says "Google's AR app didn't open…" and the button changes to **Open camera in browser**. Tap it → Chrome asks for camera permission → tap **Allow** → continue with A5. If instead it says to install "Google Play Services for AR", install/update it and the **Google** app from the Play Store and try again. |
+| A4 | Pick your ceiling height, tap **Open camera** | On phones where Chrome can do AR (most recent Android phones), the camera opens **right inside Chrome** in one tap — tap **Allow** if it asks. Otherwise Google's AR viewer opens. Time from tap to camera: ____ s (target < 3 s on 4G) |
+| A4b | (Optional) Tap **Or open in Google's AR viewer** under the button | Google's AR viewer opens. If it can't (the page slides and comes back), a gold box says so and **Open camera** still works. If there's no in-Chrome AR either, the message says to install/update "Google Play Services for AR" and the **Google** app. |
 | A5 | Point the camera at the floor where the jhoomar would hang; move the phone slowly | A soft gold circle appears on the floor |
 | A6 | Step back and look up | The jhoomar hangs above the circle, its top touching (or very close to) the ceiling |
 | A7 | Measure: floor to the bottom of the jhoomar (bottom crystal) | 9 ft: ≈ 145 cm · 10 ft: ≈ 175 cm · 11 ft: ≈ 205 cm · 12 ft: ≈ 235 cm (± 10 cm is fine) |

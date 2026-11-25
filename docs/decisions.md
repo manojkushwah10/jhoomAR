@@ -2,6 +2,10 @@
 
 Newest first. Format: decision — why — alternatives.
 
+## 2026-11-25 — One-tap camera on Android (owner request: "more user friendly")
+
+Where `navigator.xr.isSessionSupported("immersive-ar")` is true, **Open camera** starts in-Chrome AR (WebXR) directly and Google's Scene Viewer becomes a secondary link ("Or open in Google's AR viewer"). This removes the fail-then-retry step on phones like the owner's, where the Google app opens and closes. The button stays disabled until the WebXR check finishes, so the first tap always goes to the right camera. Phones without WebXR keep Scene Viewer as the main path, with failure detection; iPhones are unchanged (Quick Look).
+
 ## 2026-11-25 — AR "looks 2D" fix (owner's recording)
 
 The recording showed a real 3D model, but: the floor prompt never went away (a brief tracking loss re-showed it and hid the controls, and "object-placed" only fires once), the jhoomar floated with the phone before placement, model-viewer's AR shadow (0.8) drew a dark oval under it, and the title sat under the exit ✕. Now: placement is a one-way state (tracking loss only shows a temporary "move slowly" tip); the model is hidden until anchored (12 s safety timeout), via model-viewer's internal `scene.target.visible`; the AR shadow is clamped to 0.18 by wrapping `scene.setShadowIntensity`; the prompt is a small pill at the bottom; the title is top-left. Prompt text now says "floor (not a table)", because a table detected as the floor lifts the jhoomar about 75 cm. Both internals are pinned to model-viewer 4.4 and covered by the AR layout E2E test.

@@ -33,9 +33,9 @@ const FULLSCREEN = "position:fixed;inset:0;width:100%;height:100%;z-index:60"
  *  2. "Open camera" hands the pre-built hanging model to Google's Scene Viewer (Android) or
  *     AR Quick Look (iPhone). It opens at real size; drag moves it, twist turns it, pinch zooms
  *     (all three viewers snap back to 100% near real size).
- *  3. Android only: if Scene Viewer doesn't show anything (app missing, opens and closes, or Chrome
- *     falls back), offer AR inside Chrome itself (WebXR — asks for camera access) when the phone supports it,
- *     otherwise say what to install.
+ *  3. Android: if Chrome can run AR itself (WebXR), "Open camera" opens it directly in one tap and Google's
+ *     Scene Viewer is a secondary link. Otherwise Scene Viewer; if that shows nothing (app missing, opens and
+ *     closes, or Chrome falls back), say what to install.
  * Add ?ardebug=1 to the URL to see a diagnostics panel (for phone testing).
  */
 export function ARButton({ productSlug, productName, productUrl, variants, defaultCeiling = DEFAULT_CEILING_ID, placement = "floor" }: Props) {
@@ -162,6 +162,8 @@ export function ARButton({ productSlug, productName, productUrl, variants, defau
   // Keep the hidden elements pointed at the chosen ceiling height (before the user taps).
   useEffect(() => {
     if (!open) return
+    // Android: wait for the WebXR check, so the first tap already goes to the right camera.
+    if (platform === "scene-viewer" && xr === null) return
     let cancelled = false
     void ensureElements().then(() => {
       if (cancelled || !variant) return
@@ -190,7 +192,7 @@ export function ARButton({ productSlug, productName, productUrl, variants, defau
       cancelled = true
       setReady(false)
     }
-  }, [open, variant, ensureElements, productName, productUrl])
+  }, [open, variant, ensureElements, productName, productUrl, platform, xr])
 
   /** Android: notice when the Scene Viewer hand-off didn't show anything, however it failed. */
   function watchHandoff() {
@@ -237,7 +239,9 @@ export function ARButton({ productSlug, productName, productUrl, variants, defau
   }
 
   const canWebXr = platform === "scene-viewer" && xr === true
-  const primaryRole: Role = attempted && canWebXr ? "webxr" : "handoff"
+  // Where Chrome can run AR itself, "Open camera" opens it directly (one tap, no app switch);
+  // Google's Scene Viewer stays available as a secondary link. Elsewhere: Scene Viewer / Quick Look.
+  const primaryRole: Role = canWebXr ? "webxr" : "handoff"
 
   return (
     <div ref={holder} className="relative">
@@ -290,7 +294,7 @@ export function ARButton({ productSlug, productName, productUrl, variants, defau
 
             {attempted && canWebXr && !unsupported && (
               <p role="status" className="mt-5 rounded-xl border border-brass/40 bg-brass-soft p-3 text-sm">
-                {t.ar.tapAgainWebXr}
+                {t.ar.googleViewerFailed}
               </p>
             )}
 
@@ -307,11 +311,11 @@ export function ARButton({ productSlug, productName, productUrl, variants, defau
               className="mt-6 flex h-14 w-full items-center justify-center gap-2 rounded-full bg-ink text-base font-medium text-ivory disabled:opacity-60"
             >
               <Box aria-hidden className="size-5" />
-              {ready ? (primaryRole === "webxr" ? t.ar.openInBrowser : t.ar.open) : t.viewer.loading}
+              {ready ? t.ar.open : t.viewer.loading}
             </button>
-            {canWebXr && primaryRole === "handoff" && (
-              <button type="button" onClick={() => launch("webxr")} disabled={!ready} className="mt-3 w-full text-center text-sm underline underline-offset-4 disabled:opacity-60">
-                {t.ar.orInBrowser}
+            {canWebXr && (
+              <button type="button" onClick={() => launch("handoff")} disabled={!ready} className="mt-3 w-full text-center text-sm text-muted-foreground underline underline-offset-4 disabled:opacity-60">
+                {t.ar.orGoogleViewer}
               </button>
             )}
             {unsupported && (
