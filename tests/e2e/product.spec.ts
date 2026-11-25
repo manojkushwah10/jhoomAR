@@ -86,6 +86,20 @@ test.describe("3D viewer controls", () => {
     await toolbar.getByRole("button", { name: "Reset view" }).click()
     await expect.poll(async () => Math.abs((await view()) / start - 1)).toBeLessThan(0.05)
 
+    // Look from above / below (on phones an up/down swipe scrolls the page, so these buttons do it).
+    const phiDeg = () => mv.evaluate((el) => ((el as unknown as { getCameraOrbit(): { phi: number } }).getCameraOrbit().phi * 180) / Math.PI)
+    const startPhi = 84 // START.orbit in ModelViewer.tsx
+    await expect.poll(async () => Math.abs((await phiDeg()) - startPhi)).toBeLessThan(2)
+    await toolbar.getByRole("button", { name: "See it from above" }).click()
+    await expect.poll(phiDeg).toBeLessThan(startPhi - 25)
+    await toolbar.getByRole("button", { name: "See it from above" }).click()
+    await toolbar.getByRole("button", { name: "See it from above" }).click()
+    await expect.poll(phiDeg).toBeCloseTo(10, 0) // straight over the top, at the limit
+    for (let i = 0; i < 5; i++) await toolbar.getByRole("button", { name: "See it from below" }).click()
+    await expect.poll(phiDeg).toBeCloseTo(170, 0) // underneath, at the limit
+    await toolbar.getByRole("button", { name: "Reset view" }).click()
+    await expect.poll(async () => Math.abs((await phiDeg()) - startPhi)).toBeLessThan(2)
+
     await toolbar.getByRole("button", { name: "Full screen" }).click()
     const frame = page.locator("[data-expanded]")
     await expect(frame).toBeVisible()
@@ -315,6 +329,12 @@ test.describe("Android phone", () => {
     expect(await goal()).toBeCloseTo(1.25, 5)
     await overlay.getByRole("button", { name: "Back to real size" }).click()
     expect(await goal()).toBe(1)
+
+    // Tilt about the ceiling point to see the top / underneath, then hang straight again.
+    await expect(overlay.getByRole("button", { name: "Tilt it to see the top" })).toBeVisible()
+    await expect(overlay.getByRole("button", { name: "Tilt it to see underneath" })).toBeVisible()
+    await overlay.getByRole("button", { name: "Tilt it to see the top" }).click()
+    await overlay.getByRole("button", { name: "Hang it straight again" }).click()
 
     await status("not-presenting")
     await expect(overlay).toBeHidden()

@@ -43,5 +43,7 @@ export type ModelViewerElement = HTMLElement & {
   src: string | null
   iosSrc: string | null
   zoom(steps: number): void
+  /** Current camera position around the model: theta/phi in radians, radius in metres. */
+  getCameraOrbit(): { theta: number; phi: number; radius: number }
   toBlob(options?: { mimeType?: string; qualityArgument?: number; idealAspect?: boolean }): Promise<Blob>
 }

@@ -14,22 +14,44 @@ import type { ModelViewerElement } from "@/types/model-viewer"
  *  │                              │
  *  │        [ Real size ]         │  ← live size readout (Real size / 125 %)
  *  │   [ − ]  [100%]  [ + ]       │  ← smaller · back to real size · bigger
+ *  │ [▲ Top] [Straight] [▼ Below] │  ← tilt about the ceiling point to see the top / underneath
  *  │ Drag: move · Twist · Pinch   │
  *  └──────────────────────────────┘
  *
  * Zoom buttons drive model-viewer's own AR scale (the same value pinching changes), so buttons and
  * pinch stay in sync and "Back to real size" always returns to exactly 100 %.
+ *
+ * model-viewer scales around the bottom of the bounding box, which for our hanging GLBs is the floor
+ * marker, so a zoomed jhoomar would grow up through the ceiling or sink towards the floor; and it can only
+ * turn the model around the vertical axis. `poseControl` anchors zoom at the canopy and adds a tilt about it.
  */
 
-type ArRendererLike = { goalScale: number }
+type ArRendererLike = { goalScale: number; isPresenting?: boolean }
+type Vec3Like = { x: number; y: number; z: number }
+type QuatLike = { x: number; y: number; z: number; w: number; set: (x: number, y: number, z: number, w: number) => unknown }
+type Object3DLike = {
+  name: string
+  visible: boolean
+  position: Vec3Like
+  quaternion: QuatLike
+  traverse?: (fn: (o: Object3DLike) => void) => void
+}
 type SceneLike = {
-  scenePivot?: { scale: { x: number } }
-  target?: { visible: boolean }
+  scenePivot?: { scale: { x: number }; position: Vec3Like; quaternion: QuatLike }
+  target?: Object3DLike
+  goalTarget?: Vec3Like
+  boundingBox?: { min: Vec3Like; max: Vec3Like }
+  getCamera?: () => { matrixWorld: { elements: number[] } }
+  updateTarget?: (delta: number) => boolean
   setShadowIntensity?: (v: number) => void
+  setShadowOffset?: (v: number) => void
 }
 
 const MIN_SCALE = 0.25
 const MAX_SCALE = 4
+/** Tilt ("see the top / see underneath"): one tap = 30°, at most 90° either way. */
+const TILT_STEP = Math.PI / 6
+const TILT_MAX = Math.PI / 2
 
 /** model-viewer keeps its renderer/scene behind Symbols; find them by description (pinned to model-viewer 4.4). */
 function internal<T>(el: ModelViewerElement, description: string): T | null {
@@ -47,15 +69,220 @@ const arRenderer = (el: ModelViewerElement) => internal<{ arRenderer?: ArRendere
 const sceneOf = (el: ModelViewerElement) => internal<SceneLike>(el, "scene")
 const currentScale = (el: ModelViewerElement) => sceneOf(el)?.scenePivot?.scale.x ?? 1
 
+/**
+ * How far (in the model's own units) to lower the jhoomar's local frame at zoom `scale` so its top stays
+ * at the ceiling while model-viewer scales around the floor. 0 at real size; negative when shrinking.
+ * World top = scale × (H + lift) must equal H, so lift = H / scale − H; we return −lift.
+ */
+export function ceilingAnchorShift(heightM: number, scale: number): number {
+  if (!(scale > 0) || !(heightM > 0)) return 0
+  return heightM - heightM / scale
+}
+
+/**
+ * Horizontal tilt axis (in the jhoomar's own turned frame) for swinging it away from / towards the viewer.
+ * Positive tilt about this axis swings the body away from the camera, so its top faces the viewer.
+ * `dx, dz`: camera minus jhoomar, in the room; `yaw`: how far the jhoomar is turned (radians).
+ */
+export function tiltAxis(dx: number, dz: number, yaw: number): { x: number; z: number } {
+  // Room direction → the jhoomar's turned frame (undo the yaw), then up × direction.
+  const lx = dx * Math.cos(yaw) - dz * Math.sin(yaw)
+  const lz = dx * Math.sin(yaw) + dz * Math.cos(yaw)
+  const len = Math.hypot(lx, lz)
+  if (len < 1e-6) return { x: 1, z: 0 }
+  return { x: lz / len, z: -lx / len }
+}
+
+/** Rotate point `p` by `angle` about the horizontal unit axis (ax, 0, az) through the origin (Rodrigues). */
+export function rotateAboutHorizontalAxis(p: Vec3Like, ax: number, az: number, angle: number): Vec3Like {
+  const c = Math.cos(angle)
+  const s = Math.sin(angle)
+  const dot = ax * p.x + az * p.z
+  // a × p with a = (ax, 0, az)
+  const cx = -az * p.y
+  const cy = az * p.x - ax * p.z
+  const cz = ax * p.y
+  return {
+    x: p.x * c + cx * s + ax * dot * (1 - c),
+    y: p.y * c + cy * s,
+    z: p.z * c + cz * s + az * dot * (1 - c),
+  }
+}
+
+const FLOOR_MARKER = /^floor[\s_]marker/i
+
+type PoseControl = {
+  /** Step the tilt: +1 = show more of the top, −1 = more of the underneath, 0 = hang straight again. */
+  tilt: (step: -1 | 0 | 1) => void
+  isTilted: () => boolean
+  reset: () => void
+}
+const poses = new WeakMap<object, PoseControl>()
+
+/**
+ * Takes over the jhoomar's pose inside model-viewer's AR frame (patches the scene once per element):
+ *  - zoom is anchored at the canopy, so the jhoomar keeps hanging from the same ceiling point at every size;
+ *  - tilt swings it about the canopy, away from / towards the viewer, to see its top or underneath;
+ *  - the floor marker and shadow stay on the floor (hidden while tilted).
+ * model-viewer itself only turns the model around the vertical axis.
+ */
+function poseControl(el: ModelViewerElement): PoseControl | null {
+  const scene = sceneOf(el)
+  if (!scene?.updateTarget || !scene.boundingBox || !scene.goalTarget || !scene.target) return null
+  const existing = poses.get(scene)
+  if (existing) return existing
+  const target = scene.target
+  const goalTarget = scene.goalTarget
+  const box = scene.boundingBox
+
+  const presenting = () => Boolean(arRenderer(el)?.isPresenting)
+  const shift = () => (presenting() ? ceilingAnchorShift(box.max.y - box.min.y, scene.scenePivot?.scale.x ?? 1) : 0)
+
+  let tiltGoal = 0
+  let tiltNow = 0
+  let axis = { x: 1, z: 0 }
+  /** Where ARRenderer put the target (x, z) at the start of this AR session. */
+  let base: { x: number; z: number } | null = null
+  let lastShift = 0
+  let poseApplied = false
+
+  // The floor marker lives inside the model, so it moves with it; keep it on the floor.
+  let marker: { node: Object3DLike; baseY: number } | null = null
+  const findMarker = () => {
+    if (marker) return marker
+    target.traverse?.((o) => {
+      if (!marker && FLOOR_MARKER.test(o.name)) marker = { node: o, baseY: o.position.y }
+    })
+    return marker
+  }
+
+  // The shadow is drawn at the bottom of the model too; keep it on the floor (model-viewer also sets this
+  // while dropping the model after a drag, so add our part to whatever it asks for).
+  let shadowAsked = 0
+  if (scene.setShadowOffset) {
+    const originalOffset = scene.setShadowOffset.bind(scene)
+    scene.setShadowOffset = (v: number) => {
+      shadowAsked = v
+      originalOffset(v + shift())
+    }
+  }
+
+  const isTilted = () => Math.abs(tiltNow) > 1e-3 || Math.abs(tiltGoal) > 1e-3
+  let shadowWasTilted = false
+
+  const restoreStraight = () => {
+    target.quaternion.set(0, 0, 0, 1)
+    const m = findMarker()
+    if (m) {
+      m.node.position.y = m.baseY
+      m.node.visible = true
+    }
+    poseApplied = false
+  }
+
+  // model-viewer calls updateTarget every AR frame, right after applying this frame's zoom and turn.
+  const originalUpdate = scene.updateTarget.bind(scene)
+  scene.updateTarget = (delta: number) => {
+    if (!presenting()) {
+      // Outside AR, leave the target alone (model-viewer restores the normal 3D view's target itself).
+      if (poseApplied) restoreStraight()
+      base = null
+      lastShift = 0
+      return originalUpdate(delta)
+    }
+    if (!base) base = { x: goalTarget.x, z: goalTarget.z }
+
+    // Ease the tilt towards its goal.
+    const ease = 1 - Math.exp(-Math.max(0, delta) / 90)
+    tiltNow = Math.abs(tiltGoal - tiltNow) < 1e-3 ? tiltGoal : tiltNow + (tiltGoal - tiltNow) * ease
+
+    const k = shift()
+    if (k !== 0 || tiltNow !== 0 || poseApplied) {
+      // Straight: ARRenderer's target is the bounding-box bottom (goal y = −min.y); lower it by k for the zoom.
+      const p0 = { x: base.x, y: -box.min.y - k, z: base.z }
+      // Tilt about the canopy C (top centre): position = p0 + C − R·C keeps C where it was.
+      const c = { x: (box.min.x + box.max.x) / 2, y: box.max.y, z: (box.min.z + box.max.z) / 2 }
+      const rc = rotateAboutHorizontalAxis(c, axis.x, axis.z, tiltNow)
+      const pos = { x: p0.x + c.x - rc.x, y: p0.y + c.y - rc.y, z: p0.z + c.z - rc.z }
+      goalTarget.x = pos.x
+      goalTarget.y = pos.y
+      goalTarget.z = pos.z
+      target.position.x = pos.x
+      target.position.y = pos.y
+      target.position.z = pos.z
+      const h = Math.sin(tiltNow / 2)
+      target.quaternion.set(axis.x * h, 0, axis.z * h, Math.cos(tiltNow / 2))
+      const m = findMarker()
+      if (m) {
+        m.node.position.y = m.baseY + k
+        m.node.visible = tiltNow === 0
+      }
+      poseApplied = k !== 0 || tiltNow !== 0
+    }
+    if (k !== lastShift) {
+      lastShift = k
+      scene.setShadowOffset?.(shadowAsked)
+    }
+    const tilted = isTilted()
+    if (tilted !== shadowWasTilted) {
+      shadowWasTilted = tilted
+      refreshShadow(scene)
+    }
+    return originalUpdate(delta)
+  }
+
+  const control: PoseControl = {
+    tilt(step) {
+      if (step === 0) {
+        tiltGoal = 0
+        return
+      }
+      // Pick the swing direction from where the viewer stands now (only when starting from straight).
+      if (Math.abs(tiltNow) < 1e-3 && Math.abs(tiltGoal) < 1e-3) {
+        const cam = scene.getCamera?.().matrixWorld.elements
+        const pivot = scene.scenePivot
+        if (cam && pivot) {
+          const q = pivot.quaternion
+          axis = tiltAxis(cam[12] - pivot.position.x, cam[14] - pivot.position.z, 2 * Math.atan2(q.y, q.w))
+        }
+      }
+      tiltGoal = Math.max(-TILT_MAX, Math.min(TILT_MAX, tiltGoal + step * TILT_STEP))
+    },
+    isTilted,
+    reset() {
+      tiltGoal = 0
+      tiltNow = 0
+      base = null
+      lastShift = 0
+      shadowWasTilted = false
+      restoreStraight()
+    },
+  }
+  poses.set(scene, control)
+  return control
+}
+
 /** Max darkness of model-viewer's AR floor shadow. Its default (0.8) under a hanging light looks like a black hole. */
 const AR_SHADOW_MAX = 0.18
 
+/** Last shadow strength model-viewer asked for, so it can be put back after a tilt. */
+const shadowAsked = new WeakMap<object, number>()
+
+/** Clamp the AR shadow, and hide it while the jhoomar is tilted (the shadow would tilt with it). */
 function softenShadow(el: ModelViewerElement) {
   const scene = sceneOf(el)
-  if (!scene?.setShadowIntensity || (scene as { __jhSoft?: boolean }).__jhSoft) return
+  if (!scene?.setShadowIntensity || shadowAsked.has(scene)) return
   const original = scene.setShadowIntensity.bind(scene)
-  scene.setShadowIntensity = (v: number) => original(Math.min(v, AR_SHADOW_MAX))
-  ;(scene as { __jhSoft?: boolean }).__jhSoft = true
+  shadowAsked.set(scene, 0)
+  scene.setShadowIntensity = (v: number) => {
+    shadowAsked.set(scene, v)
+    original(poses.get(scene)?.isTilted() ? 0 : Math.min(v, AR_SHADOW_MAX))
+  }
+}
+
+function refreshShadow(scene: SceneLike) {
+  const v = shadowAsked.get(scene)
+  if (v !== undefined) scene.setShadowIntensity?.(v)
 }
 
 /** Hide the jhoomar until it's anchored to the floor, so it never floats along with the phone like a sticker. */
@@ -87,7 +314,7 @@ export function attachArOverlay(el: ModelViewerElement, info: () => { title: str
   // Middle: find-the-floor prompt (until placed).
   const prompt = h(
     "div",
-    `${GLASS}position:absolute;left:50%;bottom:calc(150px + env(safe-area-inset-bottom));transform:translateX(-50%);width:min(88%,360px);padding:10px 14px;border-radius:14px;font-size:13px;line-height:1.4;text-align:center`,
+    `${GLASS}position:absolute;left:50%;bottom:calc(214px + env(safe-area-inset-bottom));transform:translateX(-50%);width:min(88%,360px);padding:10px 14px;border-radius:14px;font-size:13px;line-height:1.4;text-align:center`,
     t.ar.arFindFloor,
   )
 
@@ -109,8 +336,15 @@ export function attachArOverlay(el: ModelViewerElement, info: () => { title: str
   const real = btn("100%", t.ar.arResetSize, true)
   const bigger = btn("+", t.ar.arZoomIn)
   row.append(smaller, real, bigger)
+  // Tilt row: swing it about the ceiling point to see the top or the underneath, then hang it straight again.
+  const tiltRow = h("div", `${GLASS}display:flex;align-items:center;gap:6px;padding:6px;border-radius:999px;pointer-events:auto`)
+  const seeTop = btn(t.ar.arTiltTop, t.ar.arTiltTopLabel, true)
+  const straight = btn(t.ar.arTiltStraight, t.ar.arTiltStraightLabel, true)
+  const seeBelow = btn(t.ar.arTiltBelow, t.ar.arTiltBelowLabel, true)
+  for (const b of [seeTop, straight, seeBelow]) b.style.padding = "0 14px"
+  tiltRow.append(seeTop, straight, seeBelow)
   const hint = h("div", "padding:0 16px;font-size:12px;color:rgba(255,255,255,.88);text-shadow:0 1px 3px rgba(0,0,0,.6);text-align:center", t.ar.arGestures)
-  bottom.append(readout, row, hint)
+  bottom.append(readout, row, tiltRow, hint)
 
   root.append(top, prompt, bottom)
   el.appendChild(root)
@@ -127,6 +361,9 @@ export function attachArOverlay(el: ModelViewerElement, info: () => { title: str
   smaller.addEventListener("click", () => setGoal((s) => s / 1.25))
   bigger.addEventListener("click", () => setGoal((s) => s * 1.25))
   real.addEventListener("click", () => setGoal(() => 1))
+  seeTop.addEventListener("click", () => poseControl(el)?.tilt(1))
+  seeBelow.addEventListener("click", () => poseControl(el)?.tilt(-1))
+  straight.addEventListener("click", () => poseControl(el)?.tilt(0))
 
   // State: placed happens once per session; losing tracking only shows a temporary tip.
   let timer = 0
@@ -162,6 +399,7 @@ export function attachArOverlay(el: ModelViewerElement, info: () => { title: str
       root.style.display = "block"
       placed = false
       softenShadow(el)
+      poseControl(el)?.reset()
       setModelVisible(el, false)
       showPrompt(t.ar.arFindFloor)
       // Never leave the jhoomar hidden if the "placed" signal doesn't come.
@@ -172,6 +410,7 @@ export function attachArOverlay(el: ModelViewerElement, info: () => { title: str
       markPlaced()
     } else if (status === "not-presenting" || status === "failed") {
       root.style.display = "none"
+      poseControl(el)?.reset()
       setModelVisible(el, true)
       window.clearInterval(timer)
       window.clearTimeout(safety)

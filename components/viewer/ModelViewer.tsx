@@ -2,7 +2,7 @@
 
 import Image from "next/image"
 import { useCallback, useEffect, useRef, useState } from "react"
-import { Maximize2, Minimize2, RotateCcw, ZoomIn, ZoomOut } from "lucide-react"
+import { ChevronsDown, ChevronsUp, Maximize2, Minimize2, RotateCcw, ZoomIn, ZoomOut } from "lucide-react"
 import { track } from "@/lib/analytics-client"
 import { t } from "@/lib/i18n"
 import type { ModelViewerElement } from "@/types/model-viewer"
@@ -18,10 +18,21 @@ type Props = {
 }
 
 const START = { orbit: "15deg 84deg auto", target: "auto auto auto", fov: "28deg" }
+/** Camera height limits (degrees from straight above), same as min/max-camera-orbit below. */
+const PHI_MIN = 10
+const PHI_MAX = 170
+/** One tap on "from above" / "from below" moves the camera this far. */
+const PHI_STEP = 35
+
+/** Next camera angle (degrees from straight above) after one "from above" (−1) or "from below" (+1) tap. */
+export function nextCameraPhi(currentDeg: number, direction: -1 | 1): number {
+  return Math.min(PHI_MAX, Math.max(PHI_MIN, currentDeg + direction * PHI_STEP))
+}
 
 /**
  * Interactive 3D viewer (Amazon-style): drag to rotate, pinch/scroll/buttons to zoom right into the
- * crystals, two-finger or right-drag to move, reset, and full screen.
+ * crystals, two-finger or right-drag to move, buttons to look from above / below, reset, and full screen.
+ * (On phones an up/down swipe still scrolls the page, so the above/below buttons are how you tilt it there.)
  * Shows the poster image first (server-rendered, no layout shift), then swaps in <model-viewer> on the
  * visitor's first interaction (or a tap on "View in 3D").
  */
@@ -36,6 +47,7 @@ export function ModelViewer({ src, poster, alt, productSlug, priority = false }:
   const loadNow = useRef<() => void>(() => {})
   const mv = useRef<ModelViewerElement | null>(null)
   const frame = useRef<HTMLDivElement>(null)
+  const tiltGoal = useRef<{ phiDeg: number; at: number } | null>(null)
 
   // Load the 3D engine (~1 MB of JS) only after the visitor starts interacting with the page,
   // so it never competes with the first paint (LCP) or blocks the main thread for Lighthouse/SEO.
@@ -78,9 +90,23 @@ export function ModelViewer({ src, poster, alt, productSlug, priority = false }:
     mv.current?.zoom(steps)
   }
 
+  /** Swing the camera over the top (−1) or underneath (+1) the jhoomar, keeping the side angle and distance. */
+  const tilt = (direction: -1 | 1) => {
+    onInteract()
+    const el = mv.current
+    if (!el) return
+    const { theta, phi, radius } = el.getCameraOrbit()
+    // Quick repeated taps: step on from where the last tap is heading, not from mid-swing.
+    const recent = tiltGoal.current && Date.now() - tiltGoal.current.at < 1200 ? tiltGoal.current.phiDeg : null
+    const next = nextCameraPhi(recent ?? (phi * 180) / Math.PI, direction)
+    tiltGoal.current = { phiDeg: next, at: Date.now() }
+    el.setAttribute("camera-orbit", `${theta}rad ${next}deg ${radius}m`)
+  }
+
   const reset = () => {
     const el = mv.current
     if (!el) return
+    tiltGoal.current = null
     el.setAttribute("camera-orbit", START.orbit)
     el.setAttribute("camera-target", START.target)
     el.setAttribute("field-of-view", START.fov)
@@ -184,6 +210,12 @@ export function ModelViewer({ src, poster, alt, productSlug, priority = false }:
             </button>
             <button type="button" className={toolButton} onClick={() => zoom(-2)} aria-label={t.viewer.zoomOut} title={t.viewer.zoomOut}>
               <ZoomOut className="size-5" />
+            </button>
+            <button type="button" className={toolButton} onClick={() => tilt(-1)} aria-label={t.viewer.fromAbove} title={t.viewer.fromAbove}>
+              <ChevronsUp className="size-5" />
+            </button>
+            <button type="button" className={toolButton} onClick={() => tilt(1)} aria-label={t.viewer.fromBelow} title={t.viewer.fromBelow}>
+              <ChevronsDown className="size-5" />
             </button>
             <button type="button" className={toolButton} onClick={reset} aria-label={t.viewer.reset} title={t.viewer.reset}>
               <RotateCcw className="size-5" />

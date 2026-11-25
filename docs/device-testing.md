@@ -21,6 +21,7 @@ Automated tests cover everything up to the moment the phone hands off to its AR 
 |---|---|---|
 | A1 | Open the product page | Poster photo shows straight away; page doesn't jump while loading |
 | A2 | Wait 2–3 s, then drag on the photo | Jhoomar rotates in 3D; pinch zooms; the page still scrolls when you swipe up/down outside the jhoomar |
+| A2b | Tap the ⇈ button 3 times, then ⇊ 5 times, then ↺ | ⇈ swings the view over the top (you see the top of the canopy and arms); ⇊ goes underneath (you see the bottom); ↺ goes back to the start view |
 | A3 | Tap **View in your room** | A sheet asks "How high is your ceiling?" with 9 / 10 / 11 / 12 ft |
 | A4 | Pick your ceiling height, tap **Open camera** | On phones where Chrome can do AR (most recent Android phones), the camera opens **right inside Chrome** in one tap — tap **Allow** if it asks. Otherwise Google's AR viewer opens. Time from tap to camera: ____ s (target < 3 s on 4G) |
 | A4b | (Optional) Tap **Or open in Google's AR viewer** under the button | Google's AR viewer opens. If it can't (the page slides and comes back), a gold box says so and **Open camera** still works. If there's no in-Chrome AR either, the message says to install/update "Google Play Services for AR" and the **Google** app. |
@@ -28,7 +29,7 @@ Automated tests cover everything up to the moment the phone hands off to its AR 
 | A6 | Step back and look up | The jhoomar hangs above the circle, its top touching (or very close to) the ceiling |
 | A7 | Measure: floor to the bottom of the jhoomar (bottom crystal) | 9 ft: ≈ 145 cm · 10 ft: ≈ 175 cm · 11 ft: ≈ 205 cm · 12 ft: ≈ 235 cm (± 10 cm is fine) |
 | A8 | Hold the tape up to the jhoomar's widest point | ≈ 80 cm |
-| A9 | Try to pinch-resize it | It should **not** change size |
+| A9 | In the in-Chrome camera: pinch, and tap **+** / **−** a few times | It gets bigger/smaller but **stays hanging from the same spot on the ceiling** (top doesn't go through the ceiling or drop down); the gold circle and shadow stay on the floor. **100%** brings it back to real size. Then tap **▲ Top** 3 times: it swings away from you about the ceiling point and you can see its top; **▼ Below** swings it towards you to see underneath; **Straight** makes it hang straight again. Also walk under it and look up. (In Google's AR viewer the top may leave the ceiling while zoomed — that app scales from the floor.) |
 | A10 | Look at it closely | Brass looks metallic; bulbs look lit (glowing); crystals look like clear/frosted glass |
 | A11 | Tap the back arrow | You're back on the product page |
 | A12 | Tap **Enquire on WhatsApp** | WhatsApp opens with a message containing the product name, code JH-DEMO-08 and the link |
