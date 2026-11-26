@@ -255,7 +255,7 @@ test.describe("Android phone", () => {
     await expect(page.getByTestId("ar-debug")).toContainText("tap → webxr")
   })
 
-  test("in-Chrome AR camera layout: floor prompt, then size readout with − / Real size / + zoom", async ({ page }) => {
+  test("in-Chrome AR camera layout: clean view — scan animation, then one control bar", async ({ page }) => {
     await page.addInitScript(() => {
       Object.defineProperty(navigator, "xr", {
         configurable: true,
@@ -274,7 +274,7 @@ test.describe("Android phone", () => {
     const overlay = xrEl.locator("[data-ar-overlay]")
     await expect(overlay).toBeVisible()
     await expect(overlay).toContainText("Aarohi 8-Arm Crystal Jhoomar")
-    await expect(overlay).toContainText("10 ft ceiling")
+    await expect(overlay).toContainText("10 ft")
     const internalScene = () =>
       xrEl.evaluate((el) => {
         let proto: object | null = el
@@ -290,24 +290,27 @@ test.describe("Android phone", () => {
         }
         return null
       })
-    await expect(overlay).toContainText("Point at the floor (not a table)")
+    const scan = overlay.locator("[data-ar-scan]")
+    await expect(scan).toBeVisible()
     // Hidden until anchored to the floor (no "sticker following the phone"), soft shadow.
     expect(await internalScene()).toEqual({ modelVisible: false, shadow: 0.18 })
     await expect(overlay.getByRole("button", { name: "Bigger" })).toBeVisible()
 
     await status("object-placed")
-    await expect(overlay).toContainText("Placed! Now look up")
+    await expect(scan).toBeHidden()
     expect((await internalScene())!.modelVisible).toBe(true)
-    await expect(overlay).toContainText("Real size")
+    // No text popups over the camera once it's placed: just the name pill and the control bar.
+    await expect(overlay.getByRole("button", { name: "Back to real size" })).toHaveText("100%")
+    await expect(overlay).not.toContainText("Placed")
+    await expect(overlay).not.toContainText("Drag")
 
     // Owner's recording: tracking lost after placement must NOT bring back the floor prompt.
     const tracking = (s: string) => xrEl.evaluate((el, s) => el.dispatchEvent(new CustomEvent("ar-tracking", { detail: { status: s } })), s)
     await tracking("not-tracking")
-    await expect(overlay).toContainText("Move your phone slowly")
-    await expect(overlay).not.toContainText("Point at the floor")
+    await expect(scan).toBeVisible()
     await expect(overlay.getByRole("button", { name: "Bigger" })).toBeVisible()
     await tracking("tracking")
-    await expect(overlay.getByText("Move your phone slowly")).toBeHidden()
+    await expect(scan).toBeHidden()
 
     // The buttons drive model-viewer's own AR scale (the value pinch-to-zoom changes).
     const goal = () =>
@@ -330,11 +333,11 @@ test.describe("Android phone", () => {
     await overlay.getByRole("button", { name: "Back to real size" }).click()
     expect(await goal()).toBe(1)
 
-    // Tilt about the ceiling point to see the top / underneath, then hang straight again.
+    // Tilt about the ceiling point to see the top / underneath; the size button also hangs it straight again.
     await expect(overlay.getByRole("button", { name: "Tilt it to see the top" })).toBeVisible()
     await expect(overlay.getByRole("button", { name: "Tilt it to see underneath" })).toBeVisible()
     await overlay.getByRole("button", { name: "Tilt it to see the top" }).click()
-    await overlay.getByRole("button", { name: "Hang it straight again" }).click()
+    await overlay.getByRole("button", { name: "Back to real size" }).click()
 
     await status("not-presenting")
     await expect(overlay).toBeHidden()

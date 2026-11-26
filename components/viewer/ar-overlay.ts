@@ -4,22 +4,11 @@ import { t } from "@/lib/i18n"
 import type { ModelViewerElement } from "@/types/model-viewer"
 
 /**
- * Camera-view layout for in-Chrome AR (WebXR). Everything here is a child of <model-viewer>, which makes it
- * part of model-viewer's AR "DOM overlay", drawn on top of the camera.
- *
- *  ┌──────────────────────────────┐
- *  │ Title          (✕ model-v.)  │  ← product name + "10 ft ceiling" chip
- *  │                              │
- *  │   Point at the floor…        │  ← tip pill (until placed / when tracking is lost)
- *  │                              │
- *  │        [ Real size ]         │  ← live size readout (Real size / 125 %)
- *  │   [ − ]  [100%]  [ + ]       │  ← smaller · back to real size · bigger
- *  │ [▲ Top] [Straight] [▼ Below] │  ← tilt about the ceiling point to see the top / underneath
- *  │ Drag: move · Twist · Pinch   │
- *  └──────────────────────────────┘
+ * Camera view for in-Chrome AR (WebXR). Everything here is a child of <model-viewer>, which makes it part of
+ * model-viewer's AR "DOM overlay", drawn on top of the camera. Layout: see `attachArOverlay`.
  *
  * Zoom buttons drive model-viewer's own AR scale (the same value pinching changes), so buttons and
- * pinch stay in sync and "Back to real size" always returns to exactly 100 %.
+ * pinch stay in sync and the size button always returns to exactly 100 %.
  *
  * model-viewer scales around the bottom of the bounding box, which for our hanging GLBs is the floor
  * marker, so a zoomed jhoomar would grow up through the ceiling or sink towards the floor; and it can only
@@ -213,12 +202,13 @@ function poseControl(el: ModelViewerElement): PoseControl | null {
       const h = Math.sin(tiltNow / 2)
       target.quaternion.set(axis.x * h, 0, axis.z * h, Math.cos(tiltNow / 2))
       const m = findMarker()
-      if (m) {
-        m.node.position.y = m.baseY + k
-        m.node.visible = tiltNow === 0
-      }
+      if (m) m.node.position.y = m.baseY + k
       poseApplied = k !== 0 || tiltNow !== 0
     }
+    // The floor marker only exists so other AR viewers put the canopy at the ceiling. Here the jhoomar is
+    // already placed, so hide it: the real floor and the soft shadow look more natural than a drawn circle.
+    const m = findMarker()
+    if (m) m.node.visible = false
     if (k !== lastShift) {
       lastShift = k
       scene.setShadowOffset?.(shadowAsked)
@@ -298,55 +288,80 @@ function h<K extends keyof HTMLElementTagNameMap>(tag: K, css: string, text = ""
   return node
 }
 
-const GLASS = "background:rgba(22,18,14,.62);backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);color:#fff;"
+const GLASS = "background:rgba(22,18,14,.55);backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);color:#fff;"
 const FONT = "font-family:system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;"
 
+const svg = (paths: string) =>
+  `<svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${paths}</svg>`
+const ICON_UP = svg('<path d="m17 11-5-5-5 5"/><path d="m17 18-5-5-5 5"/>')
+const ICON_DOWN = svg('<path d="m7 6 5 5 5-5"/><path d="m7 13 5 5 5-5"/>')
+const ICON_MINUS = svg('<path d="M6 12h12"/>')
+const ICON_PLUS = svg('<path d="M12 6v12M6 12h12"/>')
+
+/** Scan animation (phone sweeping over the floor), like the big shopping apps: a picture, not a paragraph. */
+const SCAN_CSS = `
+@keyframes jh-sweep{0%,100%{transform:translateX(-26px) rotate(-8deg)}50%{transform:translateX(26px) rotate(8deg)}}
+@keyframes jh-pulse{0%,100%{opacity:.35;transform:scale(.92)}50%{opacity:.8;transform:scale(1)}}
+[data-ar-overlay] [data-scan-phone]{animation:jh-sweep 2.2s ease-in-out infinite}
+[data-ar-overlay] [data-scan-floor]{animation:jh-pulse 2.2s ease-in-out infinite}
+@media (prefers-reduced-motion:reduce){[data-ar-overlay] [data-scan-phone],[data-ar-overlay] [data-scan-floor]{animation:none}}`
+const SCAN_ART = `<svg viewBox="0 0 120 96" width="120" height="96" aria-hidden="true">
+  <ellipse data-scan-floor cx="60" cy="80" rx="44" ry="11" fill="none" stroke="#f3dfb5" stroke-width="2" stroke-dasharray="4 5" style="transform-origin:60px 80px"/>
+  <g data-scan-phone style="transform-origin:60px 70px">
+    <rect x="44" y="10" width="32" height="54" rx="6" fill="rgba(255,255,255,.14)" stroke="#fff" stroke-width="2.5"/>
+    <circle cx="60" cy="57" r="2.2" fill="#fff"/>
+  </g>
+</svg>`
+
+/**
+ * Camera view, kept as clean as a shopping app's: nothing over the room except
+ *  - a small name pill (top-left; model-viewer's own ✕ sits top-right),
+ *  - a scan animation while looking for the floor (and again if tracking is lost),
+ *  - one control bar: − · size (tap = real size, hanging straight) · + · see the top · see underneath.
+ * Placing it gives a short vibration instead of a "Placed!" message.
+ */
 export function attachArOverlay(el: ModelViewerElement, info: () => { title: string; ceilingLabel: string }) {
   const root = h("div", `display:none;position:absolute;inset:0;pointer-events:none;${FONT}`)
   root.dataset.arOverlay = ""
+  const style = document.createElement("style")
+  style.textContent = SCAN_CSS
+  root.appendChild(style)
 
-  // Top-left: title + ceiling chip (model-viewer's own ✕ exit button sits top-right).
-  const top = h("div", "position:absolute;top:calc(14px + env(safe-area-inset-top));left:14px;right:72px;display:flex;flex-direction:column;align-items:flex-start;gap:6px")
-  const title = h("div", `${GLASS}padding:8px 14px;border-radius:14px;font:600 15px/1.25 Georgia,'Times New Roman',serif;max-width:100%`)
-  const chip = h("div", `${GLASS}padding:5px 12px;border-radius:999px;font-size:12px;letter-spacing:.02em;color:#f3dfb5`)
-  top.append(title, chip)
-
-  // Middle: find-the-floor prompt (until placed).
-  const prompt = h(
+  const title = h(
     "div",
-    `${GLASS}position:absolute;left:50%;bottom:calc(214px + env(safe-area-inset-bottom));transform:translateX(-50%);width:min(88%,360px);padding:10px 14px;border-radius:14px;font-size:13px;line-height:1.4;text-align:center`,
-    t.ar.arFindFloor,
+    `${GLASS}position:absolute;top:calc(14px + env(safe-area-inset-top));left:14px;max-width:calc(100% - 96px);padding:7px 13px;border-radius:999px;font-size:13px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis`,
   )
 
-  // Bottom: size readout, controls, gesture hint.
-  const bottom = h("div", "position:absolute;left:0;right:0;bottom:calc(18px + env(safe-area-inset-bottom));display:flex;flex-direction:column;align-items:center;gap:10px")
-  const readout = h("div", `${GLASS}padding:6px 14px;border-radius:999px;font-size:13px;font-weight:600;color:#f3dfb5`, t.ar.arRealSize)
-  const row = h("div", `${GLASS}display:flex;align-items:center;gap:6px;padding:6px;border-radius:999px;pointer-events:auto`)
-  const btn = (label: string, aria: string, wide = false) => {
+  const scan = h("div", "position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);display:flex;flex-direction:column;align-items:center;gap:8px")
+  scan.dataset.arScan = ""
+  scan.innerHTML = SCAN_ART
+  const scanLabel = h("div", "font-size:13px;font-weight:600;color:#fff;white-space:nowrap;text-shadow:0 1px 4px rgba(0,0,0,.7)", t.ar.arScan)
+  scan.appendChild(scanLabel)
+
+  const bar = h(
+    "div",
+    `${GLASS}position:absolute;left:50%;bottom:calc(20px + env(safe-area-inset-bottom));transform:translateX(-50%);display:flex;align-items:center;gap:4px;padding:5px;border-radius:999px;pointer-events:auto`,
+  )
+  const btn = (html: string, aria: string, extra = "") => {
     const b = h(
       "button",
-      `all:unset;box-sizing:border-box;cursor:pointer;height:48px;${wide ? "padding:0 18px;font-size:14px;font-weight:600" : "width:48px;font-size:26px;line-height:48px"};border-radius:999px;text-align:center;color:#fff;background:rgba(255,255,255,.12)`,
-      label,
+      `all:unset;box-sizing:border-box;cursor:pointer;height:46px;min-width:46px;display:flex;align-items:center;justify-content:center;border-radius:999px;color:#fff;${extra}`,
     )
     b.type = "button"
+    b.innerHTML = html
     b.setAttribute("aria-label", aria)
+    b.title = aria
     return b
   }
-  const smaller = btn("−", t.ar.arZoomOut)
-  const real = btn("100%", t.ar.arResetSize, true)
-  const bigger = btn("+", t.ar.arZoomIn)
-  row.append(smaller, real, bigger)
-  // Tilt row: swing it about the ceiling point to see the top or the underneath, then hang it straight again.
-  const tiltRow = h("div", `${GLASS}display:flex;align-items:center;gap:6px;padding:6px;border-radius:999px;pointer-events:auto`)
-  const seeTop = btn(t.ar.arTiltTop, t.ar.arTiltTopLabel, true)
-  const straight = btn(t.ar.arTiltStraight, t.ar.arTiltStraightLabel, true)
-  const seeBelow = btn(t.ar.arTiltBelow, t.ar.arTiltBelowLabel, true)
-  for (const b of [seeTop, straight, seeBelow]) b.style.padding = "0 14px"
-  tiltRow.append(seeTop, straight, seeBelow)
-  const hint = h("div", "padding:0 16px;font-size:12px;color:rgba(255,255,255,.88);text-shadow:0 1px 3px rgba(0,0,0,.6);text-align:center", t.ar.arGestures)
-  bottom.append(readout, row, tiltRow, hint)
+  const smaller = btn(ICON_MINUS, t.ar.arZoomOut)
+  const real = btn("100%", t.ar.arResetSize, "padding:0 14px;font-size:14px;font-weight:700;background:rgba(255,255,255,.14);font-variant-numeric:tabular-nums;color:#f3dfb5")
+  const bigger = btn(ICON_PLUS, t.ar.arZoomIn)
+  const divider = h("span", "width:1px;height:26px;background:rgba(255,255,255,.25);margin:0 4px")
+  const seeTop = btn(ICON_UP, t.ar.arTiltTopLabel)
+  const seeBelow = btn(ICON_DOWN, t.ar.arTiltBelowLabel)
+  bar.append(smaller, real, bigger, divider, seeTop, seeBelow)
 
-  root.append(top, prompt, bottom)
+  root.append(title, scan, bar)
   el.appendChild(root)
   // Our own buttons replace model-viewer's floating cube "AR" button.
   const noArButton = h("span", "display:none")
@@ -360,48 +375,47 @@ export function attachArOverlay(el: ModelViewerElement, info: () => { title: str
   }
   smaller.addEventListener("click", () => setGoal((s) => s / 1.25))
   bigger.addEventListener("click", () => setGoal((s) => s * 1.25))
-  real.addEventListener("click", () => setGoal(() => 1))
+  // The size button is "put it back as it really is": real size, hanging straight.
+  real.addEventListener("click", () => {
+    setGoal(() => 1)
+    poseControl(el)?.tilt(0)
+  })
   seeTop.addEventListener("click", () => poseControl(el)?.tilt(1))
   seeBelow.addEventListener("click", () => poseControl(el)?.tilt(-1))
-  straight.addEventListener("click", () => poseControl(el)?.tilt(0))
 
-  // State: placed happens once per session; losing tracking only shows a temporary tip.
+  // State: placed happens once per session; losing tracking only brings the scan animation back.
   let timer = 0
   let safety = 0
-  let tipTimer = 0
   let placed = false
-  const showPrompt = (text: string | null) => {
-    prompt.style.display = text ? "block" : "none"
-    if (text) prompt.textContent = text
+  const showScan = (on: boolean) => {
+    scan.style.display = on ? "flex" : "none"
   }
   const markPlaced = () => {
     if (placed) return
     placed = true
     window.clearTimeout(safety)
     setModelVisible(el, true)
-    showPrompt(t.ar.arPlaced)
-    window.clearTimeout(tipTimer)
-    tipTimer = window.setTimeout(() => showPrompt(null), 4000)
+    showScan(false)
+    navigator.vibrate?.(25)
   }
   const tick = () => {
     const s = currentScale(el)
     const isReal = Math.abs(s - 1) < 0.01
-    readout.textContent = isReal ? `✓ ${t.ar.arRealSize}` : `${Math.round(s * 100)} %`
-    readout.style.color = isReal ? "#f3dfb5" : "#fff"
+    real.textContent = isReal ? "100%" : `${Math.round(s * 100)}%`
+    real.style.color = isReal ? "#f3dfb5" : "#fff"
   }
 
   el.addEventListener("ar-status", (e) => {
     const status = (e as CustomEvent<{ status: string }>).detail.status
     if (status === "session-started") {
       const { title: name, ceilingLabel } = info()
-      title.textContent = name
-      chip.textContent = `${ceilingLabel} ${t.ar.arCeiling}`
+      title.textContent = ceilingLabel ? `${name} · ${ceilingLabel}` : name
       root.style.display = "block"
       placed = false
       softenShadow(el)
       poseControl(el)?.reset()
       setModelVisible(el, false)
-      showPrompt(t.ar.arFindFloor)
+      showScan(true)
       // Never leave the jhoomar hidden if the "placed" signal doesn't come.
       safety = window.setTimeout(markPlaced, 12000)
       // Window rAF can pause during an immersive session, so poll gently instead.
@@ -414,14 +428,12 @@ export function attachArOverlay(el: ModelViewerElement, info: () => { title: str
       setModelVisible(el, true)
       window.clearInterval(timer)
       window.clearTimeout(safety)
-      window.clearTimeout(tipTimer)
     }
   })
 
   el.addEventListener("ar-tracking", (e) => {
     const tracking = (e as CustomEvent<{ status: string }>).detail.status
-    if (tracking === "not-tracking") showPrompt(placed ? t.ar.arLostTracking : t.ar.arFindFloor)
-    else if (placed) showPrompt(null)
+    showScan(tracking === "not-tracking" || !placed)
   })
 
   return { root }
