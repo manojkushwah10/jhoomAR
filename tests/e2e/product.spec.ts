@@ -255,7 +255,7 @@ test.describe("Android phone", () => {
     await expect(page.getByTestId("ar-debug")).toContainText("tap → webxr")
   })
 
-  test("in-Chrome AR camera layout: clean view — scan animation, then one control bar", async ({ page }) => {
+  test("in-Chrome AR camera: clean view, no buttons — fingers turn, pinch and double-tap", async ({ page }) => {
     await page.addInitScript(() => {
       Object.defineProperty(navigator, "xr", {
         configurable: true,
@@ -294,13 +294,13 @@ test.describe("Android phone", () => {
     await expect(scan).toBeVisible()
     // Hidden until anchored to the floor (no "sticker following the phone"), soft shadow.
     expect(await internalScene()).toEqual({ modelVisible: false, shadow: 0.18 })
-    await expect(overlay.getByRole("button", { name: "Bigger" })).toBeVisible()
+    // No buttons over the camera (model-viewer's own ✕ lives in its shadow DOM).
+    await expect(overlay.getByRole("button")).toHaveCount(0)
 
     await status("object-placed")
     await expect(scan).toBeHidden()
     expect((await internalScene())!.modelVisible).toBe(true)
-    // No text popups over the camera once it's placed: just the name pill and the control bar.
-    await expect(overlay.getByRole("button", { name: "Back to real size" })).toHaveText("100%")
+    // No text popups over the camera once it's placed: just the name pill.
     await expect(overlay).not.toContainText("Placed")
     await expect(overlay).not.toContainText("Drag")
 
@@ -308,11 +308,10 @@ test.describe("Android phone", () => {
     const tracking = (s: string) => xrEl.evaluate((el, s) => el.dispatchEvent(new CustomEvent("ar-tracking", { detail: { status: s } })), s)
     await tracking("not-tracking")
     await expect(scan).toBeVisible()
-    await expect(overlay.getByRole("button", { name: "Bigger" })).toBeVisible()
     await tracking("tracking")
     await expect(scan).toBeHidden()
 
-    // The buttons drive model-viewer's own AR scale (the value pinch-to-zoom changes).
+    // Pinch drives model-viewer's own AR scale; double-tap puts it back to real size.
     const goal = () =>
       xrEl.evaluate((el) => {
         let proto: object | null = el
@@ -324,20 +323,39 @@ test.describe("Android phone", () => {
         }
         return null
       })
-    await overlay.getByRole("button", { name: "Bigger" }).click()
-    expect(await goal()).toBeCloseTo(1.25, 5)
-    await overlay.getByRole("button", { name: "Bigger" }).click()
-    expect(await goal()).toBeCloseTo(1.5625, 5)
-    await overlay.getByRole("button", { name: "Smaller" }).click()
-    expect(await goal()).toBeCloseTo(1.25, 5)
-    await overlay.getByRole("button", { name: "Back to real size" }).click()
+    type Touch = [type: string, id: number, x: number, y: number]
+    const touches = (list: Touch[]) =>
+      overlay.evaluate((root, list) => {
+        for (const [type, id, x, y] of list) {
+          root.dispatchEvent(new PointerEvent(type, { pointerId: id, clientX: x, clientY: y, bubbles: true, pointerType: "touch" }))
+        }
+      }, list)
+    // Two fingers 100 px apart spread to 150 px → 150 %.
+    await touches([
+      ["pointerdown", 1, 150, 300],
+      ["pointerdown", 2, 250, 300],
+      ["pointermove", 1, 125, 300],
+      ["pointermove", 2, 275, 300],
+      ["pointerup", 1, 125, 300],
+      ["pointerup", 2, 275, 300],
+    ])
+    expect(await goal()).toBeCloseTo(1.5, 5)
+    await expect(overlay.locator("[data-ar-zoom]")).toHaveText("150%")
+    // One-finger drag turns it (no zoom change).
+    await touches([
+      ["pointerdown", 3, 200, 300],
+      ["pointermove", 3, 260, 360],
+      ["pointerup", 3, 260, 360],
+    ])
+    expect(await goal()).toBeCloseTo(1.5, 5)
+    // Double-tap → real size.
+    await touches([
+      ["pointerdown", 4, 200, 300],
+      ["pointerup", 4, 200, 300],
+      ["pointerdown", 5, 202, 301],
+      ["pointerup", 5, 202, 301],
+    ])
     expect(await goal()).toBe(1)
-
-    // Tilt about the ceiling point to see the top / underneath; the size button also hangs it straight again.
-    await expect(overlay.getByRole("button", { name: "Tilt it to see the top" })).toBeVisible()
-    await expect(overlay.getByRole("button", { name: "Tilt it to see underneath" })).toBeVisible()
-    await overlay.getByRole("button", { name: "Tilt it to see the top" }).click()
-    await overlay.getByRole("button", { name: "Back to real size" }).click()
 
     await status("not-presenting")
     await expect(overlay).toBeHidden()

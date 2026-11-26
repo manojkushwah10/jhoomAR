@@ -288,7 +288,7 @@ export function ARButton({ productSlug, productName, productUrl, variants, defau
 
             <ul className="mt-5 space-y-2 text-sm text-muted-foreground">
               <li>• {t.ar.hintFloor}</li>
-              <li>• {t.ar.hintSize}</li>
+              <li>• {primaryRole === "webxr" ? t.ar.hintSize : t.ar.hintSizeApp}</li>
               <li>• {t.ar.hintLight}</li>
             </ul>
 
