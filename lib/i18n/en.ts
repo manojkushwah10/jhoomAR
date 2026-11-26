@@ -20,7 +20,7 @@ export const en = {
     sheetHelp: "Pick the closest height. Most homes are 9 or 10 feet.",
     open: "Open camera",
     hintFloor: "Point your camera at the floor below where the jhoomar will hang, then step back and look up.",
-    hintSize: "It opens at real size. Drag with one finger to turn it any way (see the top and underneath too), pinch to zoom, slide two fingers to move it. Double-tap puts it back.",
+    hintSize: "It hangs from your ceiling at real size, above the spot you point at. Swipe left/right to turn it, slide two fingers to move it, pinch to zoom, double-tap to reset. Walk under it and look up to see it from below.",
     hintSizeApp: "It opens at real size. Drag it to move it, twist with two fingers to turn it, pinch to zoom — it snaps back to real size.",
     arScan: "Scan the floor slowly",
     hintLight: "The preview doesn't light up your room.",

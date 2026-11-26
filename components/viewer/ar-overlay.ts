@@ -7,38 +7,40 @@ import type { ModelViewerElement } from "@/types/model-viewer"
  * Camera view for in-Chrome AR (WebXR). Everything here is a child of <model-viewer>, which makes it part of
  * model-viewer's AR "DOM overlay", drawn on top of the camera.
  *
- * No buttons: the jhoomar is handled with the fingers, like a 3D model viewer
- *  - one finger: turn it any way — left/right spins it, up/down swings it to show its top or underneath
- *    (it keeps turning a little after you let go);
- *  - two fingers: pinch to zoom, twist to spin, slide to move it around the room;
- *  - double-tap: real size, hanging straight again.
- * Every turn and zoom happens about the canopy, so it keeps hanging from the same point on the ceiling.
+ * A jhoomar behaves like the real thing: it hangs straight down from one fixed point on the ceiling.
+ *  - Placement: on the floor where the phone points (within easy viewing distance), never on a table or bed,
+ *    and never "inside" a wall. model-viewer on its own puts it ~2 × the model's size in front of the phone
+ *    — for a floor-to-ceiling hanging GLB that's ~3.5 m, i.e. at or behind the far wall — and takes the
+ *    first flat surface it sees as the floor.
+ *  - One finger left/right: spins it where it hangs (it never wanders off by accident).
+ *  - Two fingers: slide to move it along the room, pinch to zoom (it stays hanging from the ceiling), twist to spin.
+ *  - Double-tap: real size, facing you as placed.
+ *  - To see it from below or above, walk under it and look up — like a real one. It never tilts.
  *
- * model-viewer's own AR touch handling (drag on the floor = move, twist = spin) is switched off by cancelling
- * `beforexrselect` on our full-screen layer; we drive its internal scene/renderer instead (private API,
- * reached through its `renderer`/`scene` Symbols, pinned to model-viewer 4.4 — re-check on upgrade).
+ * model-viewer's own AR touch handling is switched off by cancelling `beforexrselect` on our full-screen layer;
+ * we drive its internal scene/renderer instead (private API, reached through its `renderer`/`scene` Symbols,
+ * pinned to model-viewer 4.4 — re-check on upgrade).
  */
 
 type Vec3Like = { x: number; y: number; z: number }
-export type Quat = { x: number; y: number; z: number; w: number }
-type QuatLike = Quat & { set: (x: number, y: number, z: number, w: number) => unknown }
 type MaterialLike = { visible: boolean }
 type ArRendererLike = {
   goalScale: number
+  goalYaw: number
   isPresenting?: boolean
   goalPosition?: Vec3Like
   placementBox?: { edgeMaterial?: MaterialLike; fillMaterial?: MaterialLike } | null
+  getHitPoint?: (hit: unknown) => Vec3Like | null
 }
 type Object3DLike = {
   name: string
   visible: boolean
   position: Vec3Like
-  quaternion: QuatLike
   traverse?: (fn: (o: Object3DLike) => void) => void
 }
 type CameraLike = { matrixWorld: { elements: number[] }; projectionMatrix?: { elements: number[] } }
 type SceneLike = {
-  scenePivot?: { scale: { x: number }; position: Vec3Like; quaternion: QuatLike }
+  scenePivot?: { scale: { x: number }; position: Vec3Like }
   target?: Object3DLike
   goalTarget?: Vec3Like
   boundingBox?: { min: Vec3Like; max: Vec3Like }
@@ -52,87 +54,52 @@ const MIN_SCALE = 0.25
 const MAX_SCALE = 4
 /** Pinching to within 6 % of real size snaps to exactly real size. */
 const SCALE_SNAP = 0.06
-/** One-finger drag: dragging across the short side of the screen turns it this far (radians). */
-const TURN_PER_SCREEN = Math.PI * 1.2
+/** One-finger drag across the short side of the screen spins it this far (radians). */
+const SPIN_PER_SCREEN = Math.PI * 1.2
 /** Taps: max movement (px) and time (ms) for a tap, max gap (ms) between the two taps of a double-tap. */
 const TAP_MOVE = 12
 const TAP_TIME = 280
 const DOUBLE_TAP_GAP = 320
 
-// ---------- Small quaternion helpers (pure, unit-tested) ----------
+/**
+ * A flat surface counts as the floor only if it's at least this far below the phone. People hold the phone
+ * at ~1.1–1.6 m; tables (~0.75 m) and kitchen counters are then well under this gap, so they're skipped.
+ */
+export const MIN_FLOOR_DROP_M = 0.6
+/** Comfortable viewing distance (horizontal, phone → point under the canopy), as AR design guides advise. */
+export const MIN_PLACE_M = 0.6
+export const MAX_PLACE_M = 2.5
+/** If no floor is found: assume the phone is this high and hang it this far ahead. */
+const FALLBACK_PHONE_HEIGHT_M = 1.4
+const FALLBACK_DISTANCE_M = 1.5
 
-export const IDENTITY: Quat = { x: 0, y: 0, z: 0, w: 1 }
+// ---------- Pure helpers (unit-tested) ----------
 
-export function quatAxisAngle(ax: number, ay: number, az: number, angle: number): Quat {
-  const len = Math.hypot(ax, ay, az) || 1
-  const s = Math.sin(angle / 2) / len
-  return { x: ax * s, y: ay * s, z: az * s, w: Math.cos(angle / 2) }
+/** Is a flat, upward-facing hit at `hitY` low enough under the phone (at `cameraY`) to be the floor? */
+export function isFloorHit(cameraY: number, hitY: number): boolean {
+  return cameraY - hitY >= MIN_FLOOR_DROP_M
 }
-
-/** a · b (apply b first, then a). */
-export function quatMul(a: Quat, b: Quat): Quat {
-  return {
-    x: a.w * b.x + a.x * b.w + a.y * b.z - a.z * b.y,
-    y: a.w * b.y - a.x * b.z + a.y * b.w + a.z * b.x,
-    z: a.w * b.z + a.x * b.y - a.y * b.x + a.z * b.w,
-    w: a.w * b.w - a.x * b.x - a.y * b.y - a.z * b.z,
-  }
-}
-
-export const quatConj = (q: Quat): Quat => ({ x: -q.x, y: -q.y, z: -q.z, w: q.w })
-
-export function quatNormalize(q: Quat): Quat {
-  const len = Math.hypot(q.x, q.y, q.z, q.w) || 1
-  return { x: q.x / len, y: q.y / len, z: q.z / len, w: q.w / len }
-}
-
-/** Rotate vector v by unit quaternion q. */
-export function quatRotate(q: Quat, v: Vec3Like): Vec3Like {
-  // v' = v + 2w(u × v) + 2u × (u × v), u = (x, y, z)
-  const cx = q.y * v.z - q.z * v.y
-  const cy = q.z * v.x - q.x * v.z
-  const cz = q.x * v.y - q.y * v.x
-  return {
-    x: v.x + 2 * (q.w * cx + q.y * cz - q.z * cy),
-    y: v.y + 2 * (q.w * cy + q.z * cx - q.x * cz),
-    z: v.z + 2 * (q.w * cz + q.x * cy - q.y * cx),
-  }
-}
-
-/** Spherical interpolation from a to b by t (0…1), shortest way round. */
-export function quatSlerp(a: Quat, b: Quat, t: number): Quat {
-  let { x, y, z, w } = b
-  let cos = a.x * x + a.y * y + a.z * z + a.w * w
-  if (cos < 0) {
-    cos = -cos
-    x = -x
-    y = -y
-    z = -z
-    w = -w
-  }
-  if (cos > 0.9995) {
-    return quatNormalize({ x: a.x + (x - a.x) * t, y: a.y + (y - a.y) * t, z: a.z + (z - a.z) * t, w: a.w + (w - a.w) * t })
-  }
-  const theta = Math.acos(Math.min(1, cos))
-  const sin = Math.sin(theta)
-  const ka = Math.sin((1 - t) * theta) / sin
-  const kb = Math.sin(t * theta) / sin
-  return { x: a.x * ka + x * kb, y: a.y * ka + y * kb, z: a.z * ka + z * kb, w: a.w * ka + w * kb }
-}
-
-/** Angle (radians) between two orientations. */
-export const quatAngle = (a: Quat, b: Quat) => 2 * Math.acos(Math.min(1, Math.abs(a.x * b.x + a.y * b.y + a.z * b.z + a.w * b.w)))
 
 /**
- * Turn from a one-finger drag of (dx, dy) screen pixels, in room coordinates (like an orbit viewer):
- * left/right spins about the room's vertical; down swings the top towards the viewer (shows the top), up shows
- * the underneath. `right` = the camera's right direction on the floor (x, z); `shortSide` = screen short side, px.
+ * Where on the floor (x, z) the jhoomar should hang: the point the phone aims at, pulled into the
+ * comfortable range around the phone so it's never placed at (or behind) the far wall.
  */
-export function dragTurn(dx: number, dy: number, shortSide: number, right: { x: number; z: number }): Quat {
-  const rate = TURN_PER_SCREEN / Math.max(1, shortSide)
-  const spin = quatAxisAngle(0, 1, 0, dx * rate)
-  const swing = quatAxisAngle(right.x, 0, right.z, dy * rate)
-  return quatMul(swing, spin)
+export function placementSpot(camera: { x: number; z: number }, hit: { x: number; z: number }, forward: { x: number; z: number }) {
+  let dx = hit.x - camera.x
+  let dz = hit.z - camera.z
+  let d = Math.hypot(dx, dz)
+  if (d < 1e-6) {
+    dx = forward.x
+    dz = forward.z
+    d = Math.hypot(dx, dz) || 1
+  }
+  const k = Math.min(MAX_PLACE_M, Math.max(MIN_PLACE_M, d)) / d
+  return { x: camera.x + dx * k, z: camera.z + dz * k }
+}
+
+/** Spin (radians) from a one-finger horizontal drag of `dx` px; same direction as model-viewer (right → turns right). */
+export function dragSpin(dx: number, shortSide: number): number {
+  return (dx * SPIN_PER_SCREEN) / Math.max(1, shortSide)
 }
 
 /** Zoom while pinching: proportional to the finger spread, clamped, snapping to real size near 100 %. */
@@ -140,11 +107,6 @@ export function pinchScale(startScale: number, startSpread: number, spread: numb
   if (!(startSpread > 0) || !(spread > 0)) return startScale
   const s = Math.min(MAX_SCALE, Math.max(MIN_SCALE, (startScale * spread) / startSpread))
   return Math.abs(s - 1) < SCALE_SNAP ? 1 : s
-}
-
-/** True when the orientation still hangs straight down (only spun about the vertical). */
-export function isUpright(q: Quat): boolean {
-  return quatRotate(q, { x: 0, y: 1, z: 0 }).y > 0.9997
 }
 
 /**
@@ -182,58 +144,74 @@ function hidePlacementBox(el: ModelViewerElement) {
   if (box.fillMaterial) box.fillMaterial.visible = false
 }
 
-const FLOOR_MARKER = /^floor[\s_]marker/i
-
 /** Where the phone is and which way it looks, flattened onto the floor. */
 type View = { pos: Vec3Like; right: { x: number; z: number }; forward: { x: number; z: number }; tanHalfFov: number }
-
-type PoseControl = {
-  /** Add a turn (room coordinates) to where it's heading. */
-  turn: (q: Quat) => void
-  /** Keep turning after the finger lifts: px per ms, slowing down. */
-  fling: (vx: number, vy: number) => void
-  stopFling: () => void
-  /** Back to hanging straight (animated). */
-  straighten: () => void
-  isTilted: () => boolean
-  view: () => View | null
-  reset: () => void
-}
-const poses = new WeakMap<object, PoseControl>()
 
 function flat(x: number, z: number, fallback: { x: number; z: number }) {
   const len = Math.hypot(x, z)
   return len < 1e-6 ? fallback : { x: x / len, z: z / len }
 }
 
+function viewOf(el: ModelViewerElement): View | null {
+  const cam = sceneOf(el)?.getCamera?.()
+  if (!cam) return null
+  const e = cam.matrixWorld.elements
+  const p5 = cam.projectionMatrix?.elements[5]
+  return {
+    pos: { x: e[12], y: e[13], z: e[14] },
+    right: flat(e[0], e[2], { x: 1, z: 0 }),
+    forward: flat(-e[8], -e[10], { x: 0, z: -1 }),
+    tanHalfFov: p5 && p5 > 0 ? 1 / p5 : 0.6,
+  }
+}
+
+const FLOOR_MARKER = /^floor[\s_]marker/i
+
+type Session = {
+  /** The floor point model-viewer accepted, if any. */
+  floorHit: Vec3Like | null
+  /** Facing when placed (double-tap goes back to it). */
+  placedYaw: number | null
+  /** Spin that keeps going after a flick: radians per ms, slowing down. */
+  spinV: number
+}
+const sessions = new WeakMap<object, Session>()
+
 /**
- * Takes over the jhoomar's pose inside model-viewer's AR frame (patches the scene once per element):
- *  - any turn, about the canopy (top centre), so it keeps hanging from the same ceiling point;
- *  - zoom anchored at the canopy too;
- *  - the floor marker stays hidden and the shadow stays on the floor (hidden while tilted off vertical).
+ * Patches model-viewer once per element:
+ *  - its floor hit test only accepts surfaces well below the phone (skips tables/beds) and remembers the point;
+ *  - zoom is anchored at the canopy, so the jhoomar keeps hanging from the same ceiling point at every size,
+ *    with the (hidden) floor marker and shadow kept on the floor;
+ *  - a flick keeps the spin going a moment.
  */
-function poseControl(el: ModelViewerElement): PoseControl | null {
+function patch(el: ModelViewerElement): Session | null {
   const scene = sceneOf(el)
-  if (!scene?.updateTarget || !scene.boundingBox || !scene.goalTarget || !scene.target) return null
-  const existing = poses.get(scene)
+  const renderer = arRenderer(el)
+  if (!scene?.updateTarget || !scene.boundingBox || !scene.goalTarget || !scene.target || !renderer) return null
+  const existing = sessions.get(scene)
   if (existing) return existing
+  const s: Session = { floorHit: null, placedYaw: null, spinV: 0 }
+  sessions.set(scene, s)
   const target = scene.target
   const goalTarget = scene.goalTarget
   const box = scene.boundingBox
 
-  const presenting = () => Boolean(arRenderer(el)?.isPresenting)
+  // Floor only: skip flat surfaces too close under the phone (table, bed, sofa) and remember the accepted point.
+  if (renderer.getHitPoint) {
+    const originalHit = renderer.getHitPoint.bind(renderer)
+    renderer.getHitPoint = (hit: unknown) => {
+      const p = originalHit(hit)
+      if (!p || !renderer.isPresenting) return p
+      const v = viewOf(el)
+      if (v && !isFloorHit(v.pos.y, p.y)) return null
+      s.floorHit = { x: p.x, y: p.y, z: p.z }
+      return p
+    }
+  }
+
+  const presenting = () => Boolean(renderer.isPresenting)
   const shift = () => (presenting() ? ceilingAnchorShift(box.max.y - box.min.y, scene.scenePivot?.scale.x ?? 1) : 0)
 
-  /** Extra turn in room coordinates: where it's heading and where it is now (eased). */
-  let goalQ: Quat = IDENTITY
-  let nowQ: Quat = IDENTITY
-  let flingV: { x: number; y: number } | null = null
-  /** Where ARRenderer put the target (x, z) at the start of this AR session. */
-  let base: { x: number; z: number } | null = null
-  let lastShift = 0
-  let poseApplied = false
-
-  // The floor marker lives inside the model, so it moves with it; keep it on the floor (and hidden).
   let marker: { node: Object3DLike; baseY: number } | null = null
   const findMarker = () => {
     if (marker) return marker
@@ -243,8 +221,7 @@ function poseControl(el: ModelViewerElement): PoseControl | null {
     return marker
   }
 
-  // The shadow is drawn at the bottom of the model too; keep it on the floor (model-viewer also sets this
-  // while dropping the model, so add our part to whatever it asks for).
+  // The shadow is drawn at the bottom of the model; keep it on the floor while zoomed.
   let shadowAsked = 0
   if (scene.setShadowOffset) {
     const originalOffset = scene.setShadowOffset.bind(scene)
@@ -253,154 +230,82 @@ function poseControl(el: ModelViewerElement): PoseControl | null {
       originalOffset(v + shift())
     }
   }
-
-  const isTilted = () => !isUpright(nowQ) || !isUpright(goalQ)
-  let shadowWasTilted = false
-
-  const view = (): View | null => {
-    const cam = scene.getCamera?.()
-    if (!cam) return null
-    const e = cam.matrixWorld.elements
-    const p5 = cam.projectionMatrix?.elements[5]
-    return {
-      pos: { x: e[12], y: e[13], z: e[14] },
-      right: flat(e[0], e[2], { x: 1, z: 0 }),
-      forward: flat(-e[8], -e[10], { x: 0, z: -1 }),
-      tanHalfFov: p5 && p5 > 0 ? 1 / p5 : 0.6,
-    }
+  // model-viewer's default AR shadow (0.8) under a hanging light looks like a black hole.
+  if (scene.setShadowIntensity) {
+    const originalIntensity = scene.setShadowIntensity.bind(scene)
+    scene.setShadowIntensity = (v: number) => originalIntensity(Math.min(v, AR_SHADOW_MAX))
   }
 
-  const restoreStraight = () => {
-    target.quaternion.set(0, 0, 0, 1)
-    const m = findMarker()
-    if (m) {
-      m.node.position.y = m.baseY
-      m.node.visible = true
-    }
-    poseApplied = false
-  }
+  let base: { x: number; z: number } | null = null
+  let lastShift = 0
+  let applied = false
 
-  // model-viewer calls updateTarget every AR frame, right after applying this frame's zoom, position and yaw.
+  // model-viewer calls updateTarget every AR frame, right after applying this frame's zoom and position.
   const originalUpdate = scene.updateTarget.bind(scene)
   scene.updateTarget = (delta: number) => {
+    const m = findMarker()
     if (!presenting()) {
-      // Outside AR, leave the target alone (model-viewer restores the normal 3D view's target itself).
-      if (poseApplied) restoreStraight()
+      if (applied && m) {
+        m.node.position.y = m.baseY
+        m.node.visible = true
+      }
+      applied = false
       base = null
       lastShift = 0
+      s.spinV = 0
       return originalUpdate(delta)
     }
     hidePlacementBox(el)
     if (!base) base = { x: goalTarget.x, z: goalTarget.z }
-    const dt = Math.min(64, Math.max(0, delta))
 
-    // Keep turning after a flick, slowing down.
-    if (flingV) {
-      const v = view()
-      if (v) goalQ = quatNormalize(quatMul(dragTurn(flingV.x * dt, flingV.y * dt, Math.min(innerWidth, innerHeight), v.right), goalQ))
-      const decay = Math.exp(-dt / 320)
-      flingV = { x: flingV.x * decay, y: flingV.y * decay }
-      if (Math.hypot(flingV.x, flingV.y) < 0.01) flingV = null
+    const dt = Math.min(64, Math.max(0, delta))
+    if (s.spinV) {
+      renderer.goalYaw += s.spinV * dt
+      s.spinV *= Math.exp(-dt / 320)
+      if (Math.abs(s.spinV) < 2e-5) s.spinV = 0
     }
-    // Ease towards the goal (fast enough to feel attached to the finger, smooth enough to hide jitter).
-    nowQ = quatAngle(nowQ, goalQ) < 1e-4 ? goalQ : quatSlerp(nowQ, goalQ, 1 - Math.exp(-dt / 45))
 
     const k = shift()
-    const pivotQ = scene.scenePivot?.quaternion ?? IDENTITY
-    // The model's own frame turns with model-viewer's pivot (its yaw): turn = P⁻¹ · Q · P.
-    const turn = quatNormalize(quatMul(quatConj(pivotQ), quatMul(nowQ, pivotQ)))
-    const turned = quatAngle(turn, IDENTITY) > 1e-5
-    if (k !== 0 || turned || poseApplied) {
-      // Straight: ARRenderer's target is the bounding-box bottom (goal y = −min.y); lower it by k for the zoom.
-      const p0 = { x: base.x, y: -box.min.y - k, z: base.z }
-      // Turn about the canopy C (top centre): position = p0 + C − R·C keeps C where it was.
-      const c = { x: (box.min.x + box.max.x) / 2, y: box.max.y, z: (box.min.z + box.max.z) / 2 }
-      const rc = quatRotate(turn, c)
-      const pos = { x: p0.x + c.x - rc.x, y: p0.y + c.y - rc.y, z: p0.z + c.z - rc.z }
-      goalTarget.x = pos.x
-      goalTarget.y = pos.y
-      goalTarget.z = pos.z
-      target.position.x = pos.x
-      target.position.y = pos.y
-      target.position.z = pos.z
-      target.quaternion.set(turn.x, turn.y, turn.z, turn.w)
-      const m = findMarker()
+    if (k !== 0 || applied) {
+      // ARRenderer's target is the bounding-box bottom (goal y = −min.y); lower it by k for the zoom.
+      goalTarget.x = base.x
+      goalTarget.y = -box.min.y - k
+      goalTarget.z = base.z
+      target.position.x = goalTarget.x
+      target.position.y = goalTarget.y
+      target.position.z = goalTarget.z
       if (m) m.node.position.y = m.baseY + k
-      poseApplied = k !== 0 || turned
+      applied = k !== 0
     }
     // The floor marker only exists so other AR viewers put the canopy at the ceiling. Here the jhoomar is
     // already placed, so hide it: the real floor and the soft shadow look more natural than a drawn circle.
-    const m = findMarker()
     if (m) m.node.visible = false
     if (k !== lastShift) {
       lastShift = k
       scene.setShadowOffset?.(shadowAsked)
     }
-    const tilted = isTilted()
-    if (tilted !== shadowWasTilted) {
-      shadowWasTilted = tilted
-      refreshShadow(scene)
-    }
     return originalUpdate(delta)
   }
-
-  const control: PoseControl = {
-    turn(q) {
-      goalQ = quatNormalize(quatMul(q, goalQ))
-    },
-    fling(vx, vy) {
-      flingV = Math.hypot(vx, vy) > 0.15 ? { x: vx, y: vy } : null
-    },
-    stopFling() {
-      flingV = null
-    },
-    straighten() {
-      flingV = null
-      goalQ = IDENTITY
-    },
-    isTilted,
-    view,
-    reset() {
-      goalQ = IDENTITY
-      nowQ = IDENTITY
-      flingV = null
-      base = null
-      lastShift = 0
-      shadowWasTilted = false
-      restoreStraight()
-    },
-  }
-  poses.set(scene, control)
-  return control
+  return s
 }
 
-/** Max darkness of model-viewer's AR floor shadow. Its default (0.8) under a hanging light looks like a black hole. */
+/** Max darkness of the AR floor shadow. */
 const AR_SHADOW_MAX = 0.18
-
-/** Last shadow strength model-viewer asked for, so it can be put back after a tilt. */
-const shadowAsked = new WeakMap<object, number>()
-
-/** Clamp the AR shadow, and hide it while the jhoomar is tilted (the shadow would tilt with it). */
-function softenShadow(el: ModelViewerElement) {
-  const scene = sceneOf(el)
-  if (!scene?.setShadowIntensity || shadowAsked.has(scene)) return
-  const original = scene.setShadowIntensity.bind(scene)
-  shadowAsked.set(scene, 0)
-  scene.setShadowIntensity = (v: number) => {
-    shadowAsked.set(scene, v)
-    original(poses.get(scene)?.isTilted() ? 0 : Math.min(v, AR_SHADOW_MAX))
-  }
-}
-
-function refreshShadow(scene: SceneLike) {
-  const v = shadowAsked.get(scene)
-  if (v !== undefined) scene.setShadowIntensity?.(v)
-}
 
 /** Hide the jhoomar until it's anchored to the floor, so it never floats along with the phone like a sticker. */
 function setModelVisible(el: ModelViewerElement, visible: boolean) {
   const target = sceneOf(el)?.target
   if (target) target.visible = visible
+}
+
+/** Put the point under the canopy at (x, z) on the floor straight away (no slide across the room). */
+function hangAt(el: ModelViewerElement, x: number, z: number, floorY?: number) {
+  const r = arRenderer(el)
+  const pivot = sceneOf(el)?.scenePivot
+  if (!r?.goalPosition || !pivot) return
+  r.goalPosition.x = pivot.position.x = x
+  r.goalPosition.z = pivot.position.z = z
+  if (floorY !== undefined) r.goalPosition.y = pivot.position.y = floorY
 }
 
 // ---------- Layout ----------
@@ -474,15 +379,15 @@ export function attachArOverlay(el: ModelViewerElement, info: () => { title: str
 
   // ----- Gestures -----
   const pointers = new Map<number, Pointer>()
-  /** One finger: last position, velocity (px/ms) for the flick. */
-  let one: { x: number; y: number; t: number; vx: number; vy: number; startX: number; startY: number; startT: number; moved: boolean } | null = null
+  /** One finger: last position, spin speed (rad/ms) for the flick. */
+  let one: { x: number; t: number; v: number; startX: number; startY: number; startT: number; moved: boolean } | null = null
   /** Two fingers: pinch/twist/slide baseline. */
   let two: { spread0: number; scale0: number; angle: number; midX: number; midY: number } | null = null
   let lastTap: { x: number; y: number; t: number } | null = null
   let zoomTimer = 0
 
-  const pose = () => poseControl(el)
   const shortSide = () => Math.min(root.clientWidth || innerWidth, root.clientHeight || innerHeight)
+  const session = () => patch(el)
 
   const showZoom = (scale: number) => {
     zoomPill.textContent = `${Math.round(scale * 100)}%`
@@ -494,10 +399,9 @@ export function attachArOverlay(el: ModelViewerElement, info: () => { title: str
 
   const startTwo = () => {
     const [a, b] = [...pointers.values()]
-    const r = arRenderer(el)
     two = {
       spread0: Math.hypot(b.x - a.x, b.y - a.y),
-      scale0: r?.goalScale || 1,
+      scale0: arRenderer(el)?.goalScale || 1,
       angle: Math.atan2(b.y - a.y, b.x - a.x),
       midX: (a.x + b.x) / 2,
       midY: (a.y + b.y) / 2,
@@ -505,7 +409,7 @@ export function attachArOverlay(el: ModelViewerElement, info: () => { title: str
   }
   const startOne = (p: Pointer) => {
     const now = performance.now()
-    one = { x: p.x, y: p.y, t: now, vx: 0, vy: 0, startX: p.x, startY: p.y, startT: now, moved: false }
+    one = { x: p.x, t: now, v: 0, startX: p.x, startY: p.y, startT: now, moved: false }
   }
 
   root.addEventListener("pointerdown", (e) => {
@@ -515,7 +419,8 @@ export function attachArOverlay(el: ModelViewerElement, info: () => { title: str
     } catch {
       /* not supported */
     }
-    pose()?.stopFling()
+    const s = session()
+    if (s) s.spinV = 0
     if (pointers.size === 1) startOne({ x: e.clientX, y: e.clientY })
     else if (pointers.size === 2) {
       one = null
@@ -528,51 +433,49 @@ export function attachArOverlay(el: ModelViewerElement, info: () => { title: str
     if (!p) return
     p.x = e.clientX
     p.y = e.clientY
+    const r = arRenderer(el)
 
     if (pointers.size === 1 && one) {
+      // One finger: spin where it hangs (left/right only; it never tilts or wanders).
       const now = performance.now()
-      const dx = p.x - one.x
-      const dy = p.y - one.y
       if (Math.hypot(p.x - one.startX, p.y - one.startY) > TAP_MOVE) one.moved = true
-      const c = pose()
-      const v = c?.view()
-      if (c && v && (dx || dy)) c.turn(dragTurn(dx, dy, shortSide(), v.right))
-      const dt = Math.max(1, now - one.t)
-      // Smoothed finger speed, for the flick when it lifts.
-      one.vx = one.vx * 0.6 + (dx / dt) * 0.4
-      one.vy = one.vy * 0.6 + (dy / dt) * 0.4
+      const spin = dragSpin(p.x - one.x, shortSide())
+      if (r && spin) r.goalYaw += spin
+      one.v = one.v * 0.6 + (spin / Math.max(1, now - one.t)) * 0.4
       one.x = p.x
-      one.y = p.y
       one.t = now
     } else if (pointers.size === 2 && two) {
       const [a, b] = [...pointers.values()]
-      const r = arRenderer(el)
-      const c = pose()
-      const v = c?.view()
       // Pinch → zoom (model-viewer's own AR scale; the canopy stays at the ceiling).
       const spread = Math.hypot(b.x - a.x, b.y - a.y)
       if (r) {
         r.goalScale = pinchScale(two.scale0, two.spread0, spread)
         showZoom(r.goalScale)
       }
-      // Twist → spin about the vertical (same direction model-viewer uses).
+      // Twist → spin (same direction model-viewer uses).
       const angle = Math.atan2(b.y - a.y, b.x - a.x)
       let dA = angle - two.angle
       if (dA > Math.PI) dA -= 2 * Math.PI
       if (dA < -Math.PI) dA += 2 * Math.PI
-      if (c && Math.abs(dA) > 1e-4) c.turn(quatAxisAngle(0, 1, 0, -dA))
+      if (r) r.goalYaw -= dA
       two.angle = angle
-      // Slide → move it around the room (along the floor, as seen from the phone).
+      // Slide → move it along the room (as seen from the phone), kept within easy viewing distance.
       const midX = (a.x + b.x) / 2
       const midY = (a.y + b.y) / 2
       const goal = r?.goalPosition
+      const v = viewOf(el)
       if (goal && v) {
         const dist = Math.max(0.5, Math.hypot(goal.x - v.pos.x, goal.y - v.pos.y, goal.z - v.pos.z))
         const metresPerPx = (2 * dist * v.tanHalfFov) / Math.max(1, root.clientHeight || innerHeight)
         const mx = (midX - two.midX) * metresPerPx
         const my = -(midY - two.midY) * metresPerPx
-        goal.x += v.right.x * mx + v.forward.x * my
-        goal.z += v.right.z * mx + v.forward.z * my
+        const next = { x: goal.x + v.right.x * mx + v.forward.x * my, z: goal.z + v.right.z * mx + v.forward.z * my }
+        const dx = next.x - v.pos.x
+        const dz = next.z - v.pos.z
+        const d = Math.hypot(dx, dz)
+        const k = d > MAX_PLACE_M + 1 ? (MAX_PLACE_M + 1) / d : 1
+        goal.x = v.pos.x + dx * k
+        goal.z = v.pos.z + dz * k
       }
       two.midX = midX
       two.midY = midY
@@ -585,22 +488,25 @@ export function attachArOverlay(el: ModelViewerElement, info: () => { title: str
     pointers.delete(e.pointerId)
     if (before === 1 && one) {
       const now = performance.now()
-      const isTap = !one.moved && now - one.startT < TAP_TIME
-      if (isTap) {
-        if (lastTap && now - lastTap.t < DOUBLE_TAP_GAP && Math.hypot(one.x - lastTap.x, one.y - lastTap.y) < 40) {
-          // Double-tap: real size, hanging straight.
+      if (!one.moved && now - one.startT < TAP_TIME) {
+        if (lastTap && now - lastTap.t < DOUBLE_TAP_GAP && Math.hypot(one.x - lastTap.x, one.startY - lastTap.y) < 40) {
+          // Double-tap: real size, facing you as placed.
           lastTap = null
           const r = arRenderer(el)
-          if (r) r.goalScale = 1
+          const s = session()
+          if (r) {
+            r.goalScale = 1
+            if (s?.placedYaw != null) r.goalYaw = s.placedYaw
+          }
           showZoom(1)
-          pose()?.straighten()
-        } else lastTap = { x: one.x, y: one.y, t: now }
+        } else lastTap = { x: one.x, y: one.startY, t: now }
       } else if (e.type === "pointerup" && now - one.t < 80) {
-        pose()?.fling(one.vx, one.vy)
+        const s = session()
+        if (s && Math.abs(one.v) > 3e-4) s.spinV = one.v
       }
       one = null
     } else if (before === 2) {
-      // One finger left after a pinch: carry on turning from where it is, without a jump.
+      // One finger left after a pinch: carry on spinning from where it is, without a jump.
       two = null
       const rest = [...pointers.values()][0]
       if (rest) {
@@ -619,10 +525,24 @@ export function attachArOverlay(el: ModelViewerElement, info: () => { title: str
   const showScan = (on: boolean) => {
     scan.style.display = on ? "flex" : "none"
   }
-  const markPlaced = () => {
+  const markPlaced = (found: boolean) => {
     if (placed) return
     placed = true
     window.clearTimeout(safety)
+    const v = viewOf(el)
+    const s = session()
+    if (v) {
+      if (found && s?.floorHit) {
+        // Hang it above the floor point the phone aims at, within easy viewing distance.
+        const spot = placementSpot(v.pos, s.floorHit, v.forward)
+        hangAt(el, spot.x, spot.z, s.floorHit.y)
+      } else {
+        // No floor found in time: a typical spot in front, at a typical floor height.
+        hangAt(el, v.pos.x + v.forward.x * FALLBACK_DISTANCE_M, v.pos.z + v.forward.z * FALLBACK_DISTANCE_M, v.pos.y - FALLBACK_PHONE_HEIGHT_M)
+      }
+    }
+    const r = arRenderer(el)
+    if (s && r) s.placedYaw = r.goalYaw
     setModelVisible(el, true)
     showScan(false)
     navigator.vibrate?.(25)
@@ -640,18 +560,21 @@ export function attachArOverlay(el: ModelViewerElement, info: () => { title: str
       two = null
       lastTap = null
       zoomPill.style.opacity = "0"
+      const s = patch(el)
+      if (s) {
+        s.floorHit = null
+        s.placedYaw = null
+        s.spinV = 0
+      }
       hidePlacementBox(el)
-      softenShadow(el)
-      poseControl(el)?.reset()
       setModelVisible(el, false)
       showScan(true)
-      // Never leave the jhoomar hidden if the "placed" signal doesn't come.
-      safety = window.setTimeout(markPlaced, 12000)
+      // Never leave the jhoomar hidden if the floor isn't found.
+      safety = window.setTimeout(() => markPlaced(false), 15000)
     } else if (status === "object-placed") {
-      markPlaced()
+      markPlaced(true)
     } else if (status === "not-presenting" || status === "failed") {
       root.style.display = "none"
-      poseControl(el)?.reset()
       setModelVisible(el, true)
       window.clearTimeout(safety)
       window.clearTimeout(zoomTimer)

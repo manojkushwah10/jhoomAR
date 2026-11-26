@@ -255,7 +255,7 @@ test.describe("Android phone", () => {
     await expect(page.getByTestId("ar-debug")).toContainText("tap → webxr")
   })
 
-  test("in-Chrome AR camera: clean view, no buttons — fingers turn, pinch and double-tap", async ({ page }) => {
+  test("in-Chrome AR camera: clean view, no buttons — fingers spin, pinch and double-tap", async ({ page }) => {
     await page.addInitScript(() => {
       Object.defineProperty(navigator, "xr", {
         configurable: true,
@@ -341,7 +341,7 @@ test.describe("Android phone", () => {
     ])
     expect(await goal()).toBeCloseTo(1.5, 5)
     await expect(overlay.locator("[data-ar-zoom]")).toHaveText("150%")
-    // One-finger drag turns it (no zoom change).
+    // One-finger drag spins it where it hangs (no zoom change).
     await touches([
       ["pointerdown", 3, 200, 300],
       ["pointermove", 3, 260, 360],
