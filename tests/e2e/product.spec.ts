@@ -255,7 +255,7 @@ test.describe("Android phone", () => {
     await expect(page.getByTestId("ar-debug")).toContainText("tap → webxr")
   })
 
-  test("in-Chrome AR camera: clean view, no buttons — fingers spin, pinch and double-tap", async ({ page }) => {
+  test("in-Chrome AR camera: scan → Place here → locked; zoom in only, Top / Below views", async ({ page }) => {
     await page.addInitScript(() => {
       Object.defineProperty(navigator, "xr", {
         configurable: true,
@@ -294,12 +294,34 @@ test.describe("Android phone", () => {
     await expect(scan).toBeVisible()
     // Hidden until anchored to the floor (no "sticker following the phone"), soft shadow.
     expect(await internalScene()).toEqual({ modelVisible: false, shadow: 0.18 })
-    // No buttons over the camera (model-viewer's own ✕ lives in its shadow DOM).
+    // No buttons over the camera while scanning (model-viewer's own ✕ lives in its shadow DOM).
     await expect(overlay.getByRole("button")).toHaveCount(0)
 
+    // Floor found: the jhoomar shows and follows the aim point until "Place here" is tapped.
     await status("object-placed")
     await expect(scan).toBeHidden()
     expect((await internalScene())!.modelVisible).toBe(true)
+    await expect(overlay.getByRole("button")).toHaveCount(1)
+    const pivotGoal = () =>
+      xrEl.evaluate((el) => {
+        let proto: object | null = el
+        while (proto) {
+          for (const sym of Object.getOwnPropertySymbols(proto)) {
+            if (sym.description === "renderer") {
+              const g = (el as unknown as Record<symbol, { arRenderer: { goalPosition: { x: number; y: number; z: number } } }>)[sym].arRenderer.goalPosition
+              return [g.x, g.y, g.z]
+            }
+          }
+          proto = Object.getPrototypeOf(proto)
+        }
+        return null
+      })
+    await overlay.getByRole("button", { name: "Place here" }).click()
+    const placedAt = await pivotGoal()
+    await expect(overlay.getByRole("button", { name: "Place here" })).toBeHidden()
+    for (const name of ["Tilt it to see the top", "Hang it straight again", "Tilt it to see underneath", "Move it to another spot"]) {
+      await expect(overlay.getByRole("button", { name })).toBeVisible()
+    }
     // No text popups over the camera once it's placed: just the name pill.
     await expect(overlay).not.toContainText("Placed")
     await expect(overlay).not.toContainText("Drag")
@@ -348,6 +370,28 @@ test.describe("Android phone", () => {
       ["pointerup", 3, 260, 360],
     ])
     expect(await goal()).toBeCloseTo(1.5, 5)
+    // Pinching in never makes it smaller than real size.
+    await touches([
+      ["pointerdown", 6, 100, 300],
+      ["pointerdown", 7, 300, 300],
+      ["pointermove", 6, 190, 300],
+      ["pointermove", 7, 210, 300],
+      ["pointerup", 6, 190, 300],
+      ["pointerup", 7, 210, 300],
+    ])
+    expect(await goal()).toBe(1)
+    await expect(overlay.locator("[data-ar-zoom]")).toHaveText("100%")
+    // Zooming and turning never changed where it hangs.
+    expect(await pivotGoal()).toEqual(placedAt)
+    await touches([
+      ["pointerdown", 8, 150, 300],
+      ["pointerdown", 9, 250, 300],
+      ["pointermove", 8, 125, 300],
+      ["pointermove", 9, 275, 300],
+      ["pointerup", 8, 125, 300],
+      ["pointerup", 9, 275, 300],
+    ])
+    expect(await goal()).toBeCloseTo(1.5, 5)
     // Double-tap → real size.
     await touches([
       ["pointerdown", 4, 200, 300],
@@ -356,6 +400,10 @@ test.describe("Android phone", () => {
       ["pointerup", 5, 202, 301],
     ])
     expect(await goal()).toBe(1)
+
+    // "Move" goes back to choosing a spot.
+    await overlay.getByRole("button", { name: "Move it to another spot" }).click()
+    await expect(overlay.getByRole("button", { name: "Place here" })).toBeVisible()
 
     await status("not-presenting")
     await expect(overlay).toBeHidden()
